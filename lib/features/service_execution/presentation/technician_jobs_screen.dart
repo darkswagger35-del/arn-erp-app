@@ -1,0 +1,1196 @@
+import 'dart:io';
+import 'dart:math' as math;
+
+import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
+import 'package:geolocator/geolocator.dart';
+import 'package:intl/intl.dart';
+import 'package:url_launcher/url_launcher.dart';
+import 'package:webview_windows/webview_windows.dart';
+
+import '../../../core/auth/app_role.dart';
+import '../../../core/widgets/management_shell.dart';
+import '../../settings/data/company_app_settings.dart';
+import '../data/service_execution_providers.dart';
+import '../data/service_execution_repository.dart';
+
+class TechnicianJobsScreen extends ConsumerStatefulWidget {
+  const TechnicianJobsScreen({super.key});
+
+  @override
+  ConsumerState<TechnicianJobsScreen> createState() =>
+      _TechnicianJobsScreenState();
+}
+
+class _TechnicianJobsScreenState extends ConsumerState<TechnicianJobsScreen> {
+  late Future<_TechnicianJobsData> _future;
+  DateTime _selectedDate = DateTime.now();
+  TechnicianJob? _selectedJob;
+  final WebviewController _mapController = WebviewController();
+  bool _mapReady = false;
+  String? _lastMapUrl;
+  Position? _currentPosition;
+  bool _optimizing = false;
+
+  static const _cannotAttendReasons = <String>[
+    'Müşteri ulaşılmadı',
+    'Müşteri erteledi',
+    'Adres sorunu',
+    'Araç / teknik sorun',
+    'Yoğunluk',
+    'Diğer',
+  ];
+
+  @override
+  void initState() {
+    super.initState();
+    _future = _load();
+    _initMap();
+  }
+
+  @override
+  void dispose() {
+    _mapController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _initMap() async {
+    if (!Platform.isWindows) return;
+    try {
+      await _mapController.initialize();
+      if (mounted) setState(() => _mapReady = true);
+    } catch (_) {
+      if (mounted) setState(() => _mapReady = false);
+    }
+  }
+
+  bool _sameDay(DateTime? value, DateTime day) {
+    if (value == null) return false;
+    final local = value.toLocal();
+    return local.year == day.year && local.month == day.month && local.day == day.day;
+  }
+
+  Future<_TechnicianJobsData> _load() async {
+    final repo = ref.read(serviceExecutionRepositoryProvider);
+    final results = await Future.wait([
+      repo.getTechnicianJobs(''),
+      repo.getCompletedJobsForDay(_selectedDate),
+    ]);
+    final active = (results[0] as List<TechnicianJob>)
+        .where((job) => _sameDay(job.plannedDate, _selectedDate))
+        .toList(growable: true);
+    active.sort((a, b) {
+      final ao = a.routeOrder;
+      final bo = b.routeOrder;
+      if (ao != null || bo != null) return (ao ?? 9999).compareTo(bo ?? 9999);
+      final ad = a.plannedDate ?? DateTime(2100);
+      final bd = b.plannedDate ?? DateTime(2100);
+      return ad.compareTo(bd);
+    });
+    return _TechnicianJobsData(
+      active: active,
+      completed: results[1] as List<TechnicianJob>,
+    );
+  }
+
+  Future<void> _pickDate() async {
+    final picked = await showDatePicker(
+      context: context,
+      initialDate: _selectedDate,
+      firstDate: DateTime(2020),
+      lastDate: DateTime(2035),
+      locale: const Locale('tr', 'TR'),
+    );
+    if (picked == null || _sameDay(picked, _selectedDate)) return;
+    setState(() {
+      _selectedDate = picked;
+      _selectedJob = null;
+      _lastMapUrl = null;
+      _future = _load();
+    });
+  }
+
+  void _moveDay(int days) {
+    setState(() {
+      _selectedDate = DateTime(
+        _selectedDate.year,
+        _selectedDate.month,
+        _selectedDate.day + days,
+      );
+      _selectedJob = null;
+      _lastMapUrl = null;
+      _future = _load();
+    });
+  }
+
+  void _refresh() {
+    setState(() {
+      _selectedJob = null;
+      _future = _load();
+    });
+  }
+
+  String _routeUrl(List<TechnicianJob> jobs) {
+    final addresses = jobs
+        .where((j) => j.mapQuery.trim().isNotEmpty)
+        .map((j) => j.mapQuery.trim())
+        .take(10)
+        .toList(growable: false);
+    if (addresses.isEmpty) {
+      return 'https://yandex.com.tr/maps/11505/izmir/';
+    }
+    final points = <String>[
+      if (_currentPosition != null)
+        '${_currentPosition!.latitude.toStringAsFixed(6)},${_currentPosition!.longitude.toStringAsFixed(6)}',
+      ...addresses,
+    ];
+    return Uri.https(
+      'yandex.com.tr',
+      '/maps/',
+      {'mode': 'routes', 'rtext': points.join('~'), 'rtt': 'auto'},
+    ).toString();
+  }
+
+  Future<void> _syncMap(List<TechnicianJob> jobs) async {
+    if (!_mapReady || !Platform.isWindows) return;
+    final url = _routeUrl(jobs);
+    if (_lastMapUrl == url) return;
+    _lastMapUrl = url;
+    try {
+      await _mapController.loadUrl(url);
+    } catch (_) {}
+  }
+
+  Future<void> _launchYandex(List<TechnicianJob> jobs) async {
+    await launchUrl(
+      Uri.parse(_routeUrl(jobs)),
+      mode: LaunchMode.externalApplication,
+    );
+  }
+
+  Future<void> _launchMap(TechnicianJob job) async {
+    if (job.mapQuery.isEmpty) return;
+    await launchUrl(
+      Uri.https('yandex.com.tr', '/maps/', {
+        'mode': 'search',
+        'text': job.mapQuery,
+      }),
+      mode: LaunchMode.externalApplication,
+    );
+  }
+
+  Future<void> _sendOnMyWay(String phone, String customerName) async {
+    var cleaned = phone.replaceAll(RegExp(r'[^0-9]'), '');
+    if (cleaned.startsWith('0')) cleaned = '90${cleaned.substring(1)}';
+    if (cleaned.isEmpty) return;
+
+    final settings = await ref.read(companyAppSettingsProvider.future);
+    final message = settings.onMyWayTemplate
+        .replaceAll('{{musteri}}', customerName)
+        .replaceAll('{{müşteri}}', customerName);
+    final opened = await launchUrl(
+      Uri.https('wa.me', '/$cleaned', {'text': message}),
+      mode: LaunchMode.externalApplication,
+    );
+    if (!opened && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('WhatsApp açılamadı.')),
+      );
+    }
+  }
+
+  Future<void> _launchPhone(String phone) async {
+    final cleaned = phone.replaceAll(RegExp(r'[^0-9+]'), '');
+    if (cleaned.isEmpty) return;
+    await launchUrl(Uri.parse('tel:$cleaned'));
+  }
+
+  String _timeLabel(TechnicianJob job) {
+    final range = RegExp(
+      r'\[Aralık:(\d{2}):(\d{2})-(\d{2}):(\d{2})\]',
+      caseSensitive: false,
+    ).firstMatch(job.description);
+    if (range != null) {
+      return '${range.group(1)}:${range.group(2)} - ${range.group(3)}:${range.group(4)}';
+    }
+    final exact = RegExp(
+      r'\[Saat:(\d{2}):(\d{2})\]',
+      caseSensitive: false,
+    ).firstMatch(job.description);
+    if (exact != null) return '${exact.group(1)}:${exact.group(2)}';
+    return 'Gün içinde';
+  }
+
+  ({int? start, int? end}) _appointmentWindow(TechnicianJob job) {
+    final range = RegExp(
+      r'\[Aralık:(\d{2}):(\d{2})-(\d{2}):(\d{2})\]',
+      caseSensitive: false,
+    ).firstMatch(job.description);
+    if (range != null) {
+      final start = int.parse(range.group(1)!) * 60 + int.parse(range.group(2)!);
+      final end = int.parse(range.group(3)!) * 60 + int.parse(range.group(4)!);
+      return (start: start, end: end);
+    }
+    final exact = RegExp(r'\[Saat:(\d{2}):(\d{2})\]', caseSensitive: false)
+        .firstMatch(job.description);
+    if (exact != null) {
+      final minute = int.parse(exact.group(1)!) * 60 + int.parse(exact.group(2)!);
+      return (start: minute, end: minute + 20);
+    }
+    return (start: null, end: null);
+  }
+
+  Future<Position?> _readCurrentPosition() async {
+    try {
+      final enabled = await Geolocator.isLocationServiceEnabled();
+      if (!enabled) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Konum servisini açıp tekrar deneyin.')),
+          );
+        }
+        return null;
+      }
+      var permission = await Geolocator.checkPermission();
+      if (permission == LocationPermission.denied) {
+        permission = await Geolocator.requestPermission();
+      }
+      if (permission == LocationPermission.denied ||
+          permission == LocationPermission.deniedForever) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Rota optimizasyonu için konum izni gerekli.')),
+          );
+        }
+        return null;
+      }
+      return await Geolocator.getCurrentPosition(
+        locationSettings: const LocationSettings(
+          accuracy: LocationAccuracy.high,
+          timeLimit: Duration(seconds: 15),
+        ),
+      );
+    } catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Konum alınamadı: $error')),
+        );
+      }
+      return null;
+    }
+  }
+
+  Future<void> _useCurrentLocation(List<TechnicianJob> jobs) async {
+    final position = await _readCurrentPosition();
+    if (position == null || !mounted) return;
+    setState(() {
+      _currentPosition = position;
+      _lastMapUrl = null;
+    });
+    await _syncMap(jobs);
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Başlangıç noktası mevcut konumunuz olarak ayarlandı.')),
+    );
+  }
+
+  double _distanceMeters(double lat, double lon, TechnicianJob job) {
+    if (!job.hasUsableTurkeyCoordinates) return double.infinity;
+    return Geolocator.distanceBetween(lat, lon, job.latitude!, job.longitude!);
+  }
+
+  Future<void> _optimizeRoute(List<TechnicianJob> jobs) async {
+    if (jobs.length < 2 || _optimizing) return;
+    setState(() => _optimizing = true);
+    try {
+      final position = _currentPosition ?? await _readCurrentPosition();
+      if (position == null) return;
+      _currentPosition = position;
+
+      final remaining = List<TechnicianJob>.from(jobs);
+      final ordered = <TechnicianJob>[];
+      var lat = position.latitude;
+      var lon = position.longitude;
+      final today = DateTime.now();
+      var cursorMinutes = _sameDay(today, _selectedDate)
+          ? today.hour * 60 + today.minute
+          : 8 * 60;
+
+      while (remaining.isNotEmpty) {
+        final scheduled = remaining
+            .where((job) => _appointmentWindow(job).start != null)
+            .toList(growable: false)
+          ..sort((a, b) =>
+              _appointmentWindow(a).start!.compareTo(_appointmentWindow(b).start!));
+        TechnicianJob? chosen;
+        if (scheduled.isNotEmpty) {
+          final next = scheduled.first;
+          final window = _appointmentWindow(next);
+          final distance = _distanceMeters(lat, lon, next);
+          final travelMinutes = distance.isFinite
+              ? math.max(5, (distance / 1000 / 35 * 60).round())
+              : 45;
+          if ((window.start ?? 9999) <= cursorMinutes + travelMinutes + 45) {
+            chosen = next;
+          }
+        }
+        if (chosen == null) {
+          final dayJobs = remaining
+              .where((job) => _appointmentWindow(job).start == null)
+              .toList(growable: false);
+          final pool = dayJobs.isNotEmpty ? dayJobs : remaining;
+          pool.sort((a, b) => _distanceMeters(lat, lon, a)
+              .compareTo(_distanceMeters(lat, lon, b)));
+          chosen = pool.first;
+        }
+
+        remaining.remove(chosen);
+        ordered.add(chosen);
+        final distance = _distanceMeters(lat, lon, chosen);
+        if (distance.isFinite) {
+          cursorMinutes += math.max(5, (distance / 1000 / 35 * 60).round()) + 30;
+          lat = chosen.latitude!;
+          lon = chosen.longitude!;
+        } else {
+          cursorMinutes += 45;
+        }
+        final window = _appointmentWindow(chosen);
+        if (window.start != null && cursorMinutes < window.start!) {
+          cursorMinutes = window.start! + 30;
+        }
+      }
+
+      await ref.read(serviceExecutionRepositoryProvider).saveTechnicianRouteOrder(
+            ordered.map((e) => e.id).toList(growable: false),
+          );
+      if (!mounted) return;
+      setState(() {
+        _lastMapUrl = null;
+        _selectedJob = ordered.isEmpty ? null : ordered.first;
+        _future = _load();
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Rota optimize edildi. Liste yeni sıraya göre güncellendi.'),
+        ),
+      );
+    } finally {
+      if (mounted) setState(() => _optimizing = false);
+    }
+  }
+
+  Future<void> _showCompletedDetail(TechnicianJob job) async {
+    showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogContext) => const Center(child: CircularProgressIndicator()),
+    );
+    TechnicianCompletedDetail? detail;
+    try {
+      detail = await ref
+          .read(serviceExecutionRepositoryProvider)
+          .getCompletedJobDetail(job.id);
+    } finally {
+      if (mounted && Navigator.of(context).canPop()) Navigator.of(context).pop();
+    }
+    if (!mounted || detail == null) return;
+    final money = NumberFormat.currency(locale: 'tr_TR', symbol: '₺');
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: Row(
+          children: [
+            const Icon(Icons.check_circle_rounded, color: Color(0xFF169B55)),
+            const SizedBox(width: 8),
+            Expanded(child: Text(detail!.job.customerName)),
+          ],
+        ),
+        content: SizedBox(
+          width: 620,
+          child: SingleChildScrollView(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(detail.job.locationText),
+                const SizedBox(height: 8),
+                Text('Servis: ${_serviceTypeLabel(detail.job.serviceType)}'),
+                if (detail.job.completionNote.trim().isNotEmpty)
+                  Text('Yapılan işlem: ${detail.job.completionNote.trim()}'),
+                if (detail.job.completedAt != null)
+                  Text('Tamamlanma: ${DateFormat('dd.MM.yyyy HH:mm').format(detail.job.completedAt!.toLocal())}'),
+                const Divider(height: 24),
+                const Text('Kullanılan Ürünler', style: TextStyle(fontWeight: FontWeight.w900)),
+                const SizedBox(height: 6),
+                if (detail.items.isEmpty)
+                  const Text('Ürün kaydı yok.')
+                else
+                  ...detail.items.map((item) => Padding(
+                        padding: const EdgeInsets.only(bottom: 6),
+                        child: Row(
+                          children: [
+                            Expanded(child: Text('${item.productName} × ${item.quantity.toStringAsFixed(item.quantity % 1 == 0 ? 0 : 1)}')),
+                            Text(money.format(item.lineTotal), style: const TextStyle(fontWeight: FontWeight.w800)),
+                          ],
+                        ),
+                      )),
+                const Divider(height: 24),
+                Row(
+                  children: [
+                    const Expanded(child: Text('Toplam', style: TextStyle(fontWeight: FontWeight.w800))),
+                    Text(money.format(detail.job.price), style: const TextStyle(fontWeight: FontWeight.w900)),
+                  ],
+                ),
+                if (detail.collectedAmount > 0)
+                  Row(
+                    children: [
+                      const Expanded(child: Text('Tahsilat')),
+                      Text(money.format(detail.collectedAmount)),
+                    ],
+                  ),
+                if (detail.paymentMethod.isNotEmpty)
+                  Text('Ödeme: ${_paymentMethodLabel(detail.paymentMethod)}'),
+              ],
+            ),
+          ),
+        ),
+        actions: [
+          OutlinedButton.icon(
+            onPressed: () {
+              Navigator.pop(dialogContext);
+              context.push('/technician/customers/${detail!.job.customerId}');
+            },
+            icon: const Icon(Icons.badge_outlined),
+            label: const Text('Müşteri Kartı'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: const Text('Kapat'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  String _paymentMethodLabel(String value) => switch (value) {
+        'cash' => 'Nakit',
+        'card' => 'Kart',
+        'transfer' => 'Havale / EFT',
+        'open_account' => 'Açık Hesap',
+        _ => value,
+      };
+
+  Future<void> _showCannotAttendDialog(TechnicianJob job) async {
+    String reason = _cannotAttendReasons.first;
+    final noteController = TextEditingController();
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: const Row(
+            children: [
+              Icon(Icons.report_problem_outlined, color: Color(0xFFE67E22)),
+              SizedBox(width: 10),
+              Text('Bu işe gidemiyorum'),
+            ],
+          ),
+          content: SizedBox(
+            width: 440,
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    job.customerName,
+                    style: const TextStyle(fontWeight: FontWeight.w900),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    job.address,
+                    style: const TextStyle(color: Color(0xFF65778A)),
+                  ),
+                  const SizedBox(height: 18),
+                  DropdownButtonFormField<String>(
+                    value: reason,
+                    decoration: const InputDecoration(
+                      labelText: 'Sebep',
+                      prefixIcon: Icon(Icons.rule_outlined),
+                    ),
+                    items: _cannotAttendReasons
+                        .map(
+                          (item) => DropdownMenuItem(
+                            value: item,
+                            child: Text(item),
+                          ),
+                        )
+                        .toList(growable: false),
+                    onChanged: (value) {
+                      if (value != null) {
+                        setDialogState(() => reason = value);
+                      }
+                    },
+                  ),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: noteController,
+                    minLines: 2,
+                    maxLines: 4,
+                    decoration: const InputDecoration(
+                      labelText: 'Açıklama (isteğe bağlı)',
+                      hintText: 'Sekreter ve yöneticiye iletilecek not',
+                      alignLabelWithHint: true,
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  const Text(
+                    'Bu işlem işi “İptal Edildi” durumuna alır. Seçtiğiniz sebep ve not sekreter ile yönetici tarafından servis detayında görülebilir.',
+                    style: TextStyle(fontSize: 12, color: Color(0xFF65778A)),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(false),
+              child: const Text('Vazgeç'),
+            ),
+            FilledButton.icon(
+              onPressed: () => Navigator.of(dialogContext).pop(true),
+              icon: const Icon(Icons.send_outlined),
+              label: const Text('Gidemiyorum Olarak Kaydet'),
+            ),
+          ],
+        ),
+      ),
+    );
+
+    if (confirmed != true) {
+      noteController.dispose();
+      return;
+    }
+
+    try {
+      await ref.read(serviceExecutionRepositoryProvider).reportCannotAttend(
+            serviceRequestId: job.id,
+            reason: reason,
+            note: noteController.text,
+          );
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'İş “İptal Edildi” bölümüne gönderildi. Sebep ve not kaydedildi.',
+          ),
+        ),
+      );
+      _refresh();
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('İşlem tamamlanamadı: $error')),
+      );
+    } finally {
+      noteController.dispose();
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) => ManagementShell(
+        role: AppRole.technician,
+        title: 'Günlük İşlerim',
+        subtitle:
+            'Seçtiğiniz günün aktif ve tamamlanan servislerini, rotanızı ve müşteri detaylarını yönetin.',
+        actions: [
+          IconButton(tooltip: 'Önceki gün', onPressed: () => _moveDay(-1), icon: const Icon(Icons.chevron_left_rounded)),
+          OutlinedButton.icon(
+            onPressed: _pickDate,
+            icon: const Icon(Icons.calendar_month_outlined),
+            label: Text(DateFormat('dd.MM.yyyy').format(_selectedDate)),
+          ),
+          IconButton(tooltip: 'Sonraki gün', onPressed: () => _moveDay(1), icon: const Icon(Icons.chevron_right_rounded)),
+          OutlinedButton.icon(
+            onPressed: () async {
+              final data = await _future;
+              await _useCurrentLocation(data.active);
+            },
+            icon: const Icon(Icons.my_location_rounded),
+            label: const Text('Konumumu Kullan'),
+          ),
+          FilledButton.icon(
+            onPressed: _optimizing
+                ? null
+                : () async {
+                    final data = await _future;
+                    await _optimizeRoute(data.active);
+                  },
+            icon: _optimizing
+                ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
+                : const Icon(Icons.route_rounded),
+            label: const Text('Rotayı Optimize Et'),
+          ),
+          IconButton(
+            onPressed: _refresh,
+            tooltip: 'Yenile',
+            icon: const Icon(Icons.refresh_rounded),
+          ),
+        ],
+        child: FutureBuilder<_TechnicianJobsData>(
+          future: _future,
+          builder: (context, snapshot) {
+            if (snapshot.connectionState == ConnectionState.waiting) {
+              return const Center(child: CircularProgressIndicator());
+            }
+            if (snapshot.hasError) {
+              return Center(child: Text('İşler yüklenemedi: ${snapshot.error}'));
+            }
+
+            final data = snapshot.data ?? const _TechnicianJobsData();
+            final jobs = data.active;
+            final completedJobs = data.completed;
+            if (_selectedJob == null && jobs.isNotEmpty) {
+              WidgetsBinding.instance.addPostFrameCallback((_) {
+                if (mounted && _selectedJob == null) {
+                  setState(() => _selectedJob = jobs.first);
+                }
+              });
+            }
+            WidgetsBinding.instance.addPostFrameCallback((_) => _syncMap(jobs));
+
+            return LayoutBuilder(
+              builder: (context, constraints) {
+                if (constraints.maxWidth < 1100) {
+                  return ListView(
+                    padding: const EdgeInsets.all(14),
+                    children: [
+                      SizedBox(
+                        width: double.infinity,
+                        child: FilledButton.icon(
+                          onPressed: () => _launchYandex(jobs),
+                          icon: const Icon(Icons.map_outlined),
+                          label: Text('Haritayı Aç (${jobs.length} iş)'),
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      ...jobs.asMap().entries.map(
+                            (entry) => Padding(
+                              padding: const EdgeInsets.only(bottom: 10),
+                              child: _jobCard(
+                                entry.value,
+                                entry.key,
+                                compact: true,
+                              ),
+                            ),
+                          ),
+                      if (completedJobs.isNotEmpty) ...[
+                        const SizedBox(height: 12),
+                        Text('Tamamlanan (${completedJobs.length})', style: const TextStyle(fontWeight: FontWeight.w900, fontSize: 16)),
+                        const SizedBox(height: 8),
+                        ...completedJobs.map(_completedJobCard),
+                      ],
+                    ],
+                  );
+                }
+
+                // ManagementShell bu alanı zaten Expanded ile sınırlar. SizedBox
+                // kullanmak WebView/Column kombinasyonunun sonsuz yükseklik üretmesini
+                // ve debug modundaki dev sarı-siyah overflow şeridini engeller.
+                return SizedBox(
+                  width: constraints.maxWidth,
+                  height: constraints.maxHeight,
+                  child: Padding(
+                    padding: const EdgeInsets.all(14),
+                    child: Column(
+                      children: [
+                        Expanded(
+                          child: Row(
+                            crossAxisAlignment: CrossAxisAlignment.stretch,
+                            children: [
+                              SizedBox(width: 350, child: _jobsList(jobs, completedJobs)),
+                              const SizedBox(width: 12),
+                              Expanded(flex: 7, child: _mapPanel(jobs)),
+                              const SizedBox(width: 12),
+                              SizedBox(width: 330, child: _detailPanel()),
+                            ],
+                          ),
+                        ),
+                        const SizedBox(height: 10),
+                        _summary(jobs, completedJobs),
+                      ],
+                    ),
+                  ),
+                );
+              },
+            );
+          },
+        ),
+      );
+
+  Widget _jobsList(List<TechnicianJob> jobs, List<TechnicianJob> completedJobs) => Container(
+        decoration: _panelDecoration(),
+        child: Column(
+          children: [
+            const Padding(
+              padding: EdgeInsets.all(14),
+              child: Row(
+                children: [
+                  Icon(Icons.today_outlined, color: Color(0xFF10B8C4)),
+                  SizedBox(width: 8),
+                  Text(
+                    'Seçili Gün İşlerim',
+                    style: TextStyle(fontWeight: FontWeight.w900, fontSize: 16),
+                  ),
+                ],
+              ),
+            ),
+            const Divider(height: 1),
+            Expanded(
+              child: ListView(
+                children: [
+                  if (jobs.isEmpty)
+                    const Padding(
+                      padding: EdgeInsets.all(18),
+                      child: Text('Bu tarihte aktif servis yok.'),
+                    )
+                  else
+                    ...jobs.asMap().entries.map(
+                      (entry) => Column(
+                        children: [
+                          _jobCard(entry.value, entry.key, compact: false),
+                          const Divider(height: 1),
+                        ],
+                      ),
+                    ),
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(14, 14, 14, 8),
+                    child: Text(
+                      'Tamamlanan (${completedJobs.length})',
+                      style: const TextStyle(fontWeight: FontWeight.w900),
+                    ),
+                  ),
+                  if (completedJobs.isEmpty)
+                    const Padding(
+                      padding: EdgeInsets.fromLTRB(14, 0, 14, 14),
+                      child: Text('Bu tarihte tamamlanan servis yok.'),
+                    )
+                  else
+                    ...completedJobs.map(_completedJobCard),
+                ],
+              ),
+            ),
+          ],
+        ),
+      );
+
+  Widget _jobCard(
+    TechnicianJob job,
+    int index, {
+    required bool compact,
+  }) {
+    final selected = _selectedJob?.id == job.id;
+    return Material(
+      color: selected ? const Color(0xFFE7F8FA) : Colors.transparent,
+      child: InkWell(
+        onTap: () => setState(() => _selectedJob = job),
+        child: Padding(
+          padding: const EdgeInsets.all(12),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  CircleAvatar(
+                    radius: 15,
+                    backgroundColor: const Color(0xFF10B8C4),
+                    child: Text(
+                      '${index + 1}',
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 11,
+                        fontWeight: FontWeight.w900,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 9),
+                  Expanded(
+                    child: Text(
+                      job.customerName,
+                      style: const TextStyle(fontWeight: FontWeight.w900),
+                    ),
+                  ),
+                  if (index == 0) ...[
+                    Container(
+                      margin: const EdgeInsets.only(right: 6),
+                      padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFE5F8EF),
+                        borderRadius: BorderRadius.circular(20),
+                      ),
+                      child: const Text(
+                        'Sıradaki',
+                        style: TextStyle(
+                          color: Color(0xFF169B55),
+                          fontSize: 10,
+                          fontWeight: FontWeight.w900,
+                        ),
+                      ),
+                    ),
+                  ],
+                  Text(
+                    _timeLabel(job),
+                    style: const TextStyle(
+                      color: Color(0xFF0A99A7),
+                      fontSize: 11,
+                      fontWeight: FontWeight.w800,
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 5),
+              Text(
+                job.address,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(color: Color(0xFF65778A), fontSize: 12),
+              ),
+              const SizedBox(height: 4),
+              Text(
+                _serviceTypeLabel(job.serviceType),
+                style: const TextStyle(
+                  color: Color(0xFF334E68),
+                  fontWeight: FontWeight.w700,
+                  fontSize: 12,
+                ),
+              ),
+              if (compact) ...[
+                const SizedBox(height: 8),
+                Wrap(
+                  spacing: 6,
+                  runSpacing: 6,
+                  children: [
+                    OutlinedButton.icon(
+                      onPressed: job.phone.isEmpty
+                          ? null
+                          : () => _launchPhone(job.phone),
+                      icon: const Icon(Icons.phone_outlined),
+                      label: const Text('Ara'),
+                    ),
+                    OutlinedButton.icon(
+                      onPressed: job.phone.isEmpty
+                          ? null
+                          : () => _sendOnMyWay(job.phone, job.customerName),
+                      icon: const Icon(Icons.chat_outlined),
+                      label: const Text('Geliyorum'),
+                    ),
+                    OutlinedButton.icon(
+                      onPressed: () => _showCannotAttendDialog(job),
+                      icon: const Icon(Icons.report_problem_outlined),
+                      label: const Text('Gidemiyorum'),
+                    ),
+                    FilledButton(
+                      onPressed: () => context.push('/technician/jobs/${job.id}'),
+                      child: const Text('İşi Aç'),
+                    ),
+                  ],
+                ),
+              ],
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _completedJobCard(TechnicianJob job) => InkWell(
+        onTap: () => _showCompletedDetail(job),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+          child: Row(
+            children: [
+              const CircleAvatar(
+                radius: 15,
+                backgroundColor: Color(0xFFE5F8EF),
+                child: Icon(Icons.check_rounded, size: 18, color: Color(0xFF169B55)),
+              ),
+              const SizedBox(width: 9),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(job.customerName, style: const TextStyle(fontWeight: FontWeight.w900)),
+                    Text(_serviceTypeLabel(job.serviceType), style: const TextStyle(fontSize: 12, color: Color(0xFF65778A))),
+                  ],
+                ),
+              ),
+              const Icon(Icons.chevron_right_rounded, color: Color(0xFF94A3B8)),
+            ],
+          ),
+        ),
+      );
+
+  Widget _mapPanel(List<TechnicianJob> jobs) => Container(
+        decoration: _panelDecoration(),
+        clipBehavior: Clip.antiAlias,
+        child: Column(
+          children: [
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+              child: Row(
+                children: [
+                  const Icon(Icons.map_outlined, color: Color(0xFF10B8C4)),
+                  const SizedBox(width: 8),
+                  const Expanded(
+                    child: Text(
+                      'Yandex Harita',
+                      style: TextStyle(fontWeight: FontWeight.w900, fontSize: 16),
+                    ),
+                  ),
+                  OutlinedButton.icon(
+                    onPressed: () => _launchYandex(jobs),
+                    icon: const Icon(Icons.open_in_new),
+                    label: const Text('Yandex’te Aç'),
+                  ),
+                ],
+              ),
+            ),
+            const Divider(height: 1),
+            Expanded(
+              child: Platform.isWindows && _mapReady
+                  ? Webview(_mapController)
+                  : Center(
+                      child: FilledButton.icon(
+                        onPressed: () => _launchYandex(jobs),
+                        icon: const Icon(Icons.map_outlined),
+                        label: const Text('Haritayı Aç'),
+                      ),
+                    ),
+            ),
+          ],
+        ),
+      );
+
+  Widget _detailPanel() {
+    final job = _selectedJob;
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: _panelDecoration(),
+      child: job == null
+          ? const Center(child: Text('Soldan bir iş seçin.'))
+          : Column(
+              children: [
+                Expanded(
+                  child: SingleChildScrollView(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          job.customerName,
+                          style: const TextStyle(
+                            fontSize: 20,
+                            fontWeight: FontWeight.w900,
+                          ),
+                        ),
+                        const SizedBox(height: 8),
+                        Text(
+                          job.locationText,
+                          style: const TextStyle(color: Color(0xFF65778A)),
+                        ),
+                        const SizedBox(height: 8),
+                        Text(
+                          'Planlama: ${_timeLabel(job)}',
+                          style: const TextStyle(fontWeight: FontWeight.w800),
+                        ),
+                        if (job.plannedDate != null)
+                          Text(
+                            DateFormat('dd.MM.yyyy')
+                                .format(job.plannedDate!.toLocal()),
+                          ),
+                        const Divider(height: 28),
+                        Text(
+                          _serviceTypeLabel(job.serviceType),
+                          style: const TextStyle(fontWeight: FontWeight.w900),
+                        ),
+                        if (job.plannedProductName.isNotEmpty) ...[
+                          const SizedBox(height: 8),
+                          Text(
+                            '${job.plannedProductName} × ${job.plannedQuantity.toStringAsFixed(job.plannedQuantity % 1 == 0 ? 0 : 1)}',
+                          ),
+                          Text(
+                            NumberFormat.currency(locale: 'tr_TR', symbol: '₺')
+                                .format(job.price),
+                            style: const TextStyle(
+                              color: Color(0xFF0A99A7),
+                              fontWeight: FontWeight.w900,
+                            ),
+                          ),
+                        ],
+                        if (job.description
+                            .replaceAll(RegExp(r'^\[[^\]]+\]\s*'), '')
+                            .trim()
+                            .isNotEmpty) ...[
+                          const Divider(height: 28),
+                          const Text(
+                            'Not',
+                            style: TextStyle(fontWeight: FontWeight.w900),
+                          ),
+                          const SizedBox(height: 5),
+                          Text(
+                            job.description.replaceAll(
+                              RegExp(r'^\[[^\]]+\]\s*'),
+                              '',
+                            ),
+                          ),
+                        ],
+                        const Divider(height: 28),
+                        Wrap(
+                          spacing: 8,
+                          runSpacing: 8,
+                          children: [
+                            OutlinedButton.icon(
+                              onPressed: () => context.push('/technician/customers/${job.customerId}'),
+                              icon: const Icon(Icons.badge_outlined),
+                              label: const Text('Müşteri Kartı'),
+                            ),
+                            OutlinedButton.icon(
+                              onPressed: () => context.push('/technician/customers/${job.customerId}/edit'),
+                              icon: const Icon(Icons.edit_outlined),
+                              label: const Text('Bilgileri Düzenle'),
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                SizedBox(
+                  width: double.infinity,
+                  child: FilledButton.icon(
+                    onPressed: () async {
+                      await context.push('/technician/jobs/${job.id}');
+                      _refresh();
+                    },
+                    icon: const Icon(Icons.play_arrow_rounded),
+                    label: const Text('İşe Başla'),
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Row(
+                  children: [
+                    Expanded(
+                      child: OutlinedButton.icon(
+                        onPressed: job.phone.isEmpty
+                            ? null
+                            : () => _launchPhone(job.phone),
+                        icon: const Icon(Icons.phone_outlined),
+                        label: const Text('Ara'),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: OutlinedButton.icon(
+                        onPressed: job.phone.isEmpty
+                            ? null
+                            : () => _sendOnMyWay(job.phone, job.customerName),
+                        icon: const Icon(Icons.chat_outlined),
+                        label: const Text('Geliyorum'),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                Row(
+                  children: [
+                    Expanded(
+                      child: OutlinedButton.icon(
+                        onPressed: job.mapQuery.isEmpty
+                            ? null
+                            : () => _launchMap(job),
+                        icon: const Icon(Icons.navigation_outlined),
+                        label: const Text('Harita'),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: OutlinedButton.icon(
+                        style: OutlinedButton.styleFrom(
+                          foregroundColor: const Color(0xFFD35D17),
+                        ),
+                        onPressed: () => _showCannotAttendDialog(job),
+                        icon: const Icon(Icons.report_problem_outlined),
+                        label: const Text('Gidemiyorum'),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+    );
+  }
+
+  Widget _summary(List<TechnicianJob> jobs, List<TechnicianJob> completedJobs) {
+    final done = completedJobs.length;
+    final progress = jobs.where((j) => j.status == 'in_progress').length;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
+      decoration: _panelDecoration(),
+      child: Wrap(
+        alignment: WrapAlignment.spaceAround,
+        spacing: 24,
+        runSpacing: 8,
+        children: [
+          Text(
+            'Toplam İş: ${jobs.length + completedJobs.length}',
+            style: const TextStyle(fontWeight: FontWeight.w800),
+          ),
+          Text(
+            'Tamamlanan: $done',
+            style: const TextStyle(
+              color: Color(0xFF169B55),
+              fontWeight: FontWeight.w800,
+            ),
+          ),
+          Text(
+            'Devam Eden: $progress',
+            style: const TextStyle(
+              color: Color(0xFF2979FF),
+              fontWeight: FontWeight.w800,
+            ),
+          ),
+          Text(
+            'Kalan: ${jobs.length}',
+            style: const TextStyle(
+              color: Color(0xFFF59E0B),
+              fontWeight: FontWeight.w800,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  BoxDecoration _panelDecoration() => BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: const Color(0xFFE1EAF0)),
+      );
+}
+
+class _TechnicianJobsData {
+  const _TechnicianJobsData({
+    this.active = const <TechnicianJob>[],
+    this.completed = const <TechnicianJob>[],
+  });
+  final List<TechnicianJob> active;
+  final List<TechnicianJob> completed;
+}
+
+String _serviceTypeLabel(String value) => switch (value) {
+      'new_installation' => 'Yeni Kurulum',
+      'filter_change' => 'Filtre Değişimi',
+      'fault' => 'Arıza',
+      _ => 'Servis',
+    };

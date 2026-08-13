@@ -1,0 +1,10 @@
+MOTUS Akıllı Rota V8
+
+- Akıllı plan önizlemesinde ilçe yanında mahalle gösterilir.
+  Örnek: Bayraklı • Manavkuyu Mah.
+- Her müşteri satırına sürükleme tutamacı eklendi.
+- Müşteriler aynı teknikerin rotasında yukarı/aşağı sürüklenerek elle sıralanabilir.
+- Manuel sıra Planı Uygula işleminde route_order olarak kaydedilir.
+- Tekniker dropdown ile değiştirildiğinde müşteri eski rotadan çıkar, yeni teknikerin rotasına eklenir.
+- Tekniker değişikliği sonrası yeni rotanın km/dk önizlemesi yeniden hesaplanır.
+- V7 koridor planlama mantığı korunmuştur.

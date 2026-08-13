@@ -1,0 +1,8 @@
+MOTUS Akilli Rota V6
+
+- Is sayisi dengeleme kriteri kullanilmiyor.
+- Rota kumeleri k-medoids / gercek koordinat yakinligi ile olusturuluyor.
+- Farkli koridordan tek is kopmasini azaltmak icin rota uzunlugu + kume yayilimi + kume capi birlikte puanlaniyor.
+- Plan sonrasinda tekli tasima ve iki rota arasinda swap ile toplam rota maliyeti tekrar optimize ediliyor.
+- Ayni service_request id listede iki kez gelirse akilli planlamaya tek kez giriyor.
+- Ilce isimleri sabit rota kurali olarak kodlanmadi; koordinat esasli calisiyor.

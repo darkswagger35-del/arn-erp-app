@@ -1,0 +1,12 @@
+MOTUS AKILLI ROTA V7
+
+- Is sayisi dengelemesi kullanilmaz.
+- Izmir merkez saha rotalari 3 ana koridorda tutulur:
+  * Kuzey/Kuzeydogu: Karsiyaka, Bayrakli, Bornova, Cigli
+  * Merkez/Guney: Konak, Karabaglar, Buca, Gaziemir
+  * Bati: Balcova, Narlidere, Guzelbahce, Urla
+- Koridor icindeki ziyaret sirasi gerçek musteri koordinatlarina gore optimize edilir.
+- Koridor disi/uzak ilceler koordinata gore en az rota artisi yaratan gruba eklenir.
+- Ayni musterinin ayni plan havuzundaki birden fazla servis talebi tek fiziksel durak olarak gosterilir.
+  Plan uygulandiginda ayni musterinin tum servis kayitlari ayni teknikere ve ayni rota sirasina atanir.
+- PopupMenu icindeki ListTile kullanimi kaldirildi; ListTile ink/background uyarilarinin ilgili kaynagi temizlendi.
