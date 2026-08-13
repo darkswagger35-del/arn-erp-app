@@ -93,7 +93,10 @@ class _DispatchBoardScreenState extends ConsumerState<DispatchBoardScreen> {
   String? _selectedDistrict;
   final Set<String> _selectedDistricts = <String>{};
   DateTime? _selectedPlanDate;
-  String? _selectedTechnicianId; // Tekli manuel atama için
+  String? _selectedTechnicianId; // Toplu atama hedefi
+  String? _filterTechnicianId; // Harita ve iş listesi filtresi
+  String _routeSearch = '';
+  String _routeSort = 'route';
   final Set<String> _smartTechnicianIds = <String>{};
   _DispatchListMode _listMode = _DispatchListMode.unassigned;
   final Set<String> _selectedRequestIds = <String>{};
@@ -169,6 +172,10 @@ class _DispatchBoardScreenState extends ConsumerState<DispatchBoardScreen> {
       setState(() {
         _requests = requests;
         _technicians = technicians;
+        if (_filterTechnicianId != null &&
+            !technicians.any((tech) => tech.id == _filterTechnicianId)) {
+          _filterTechnicianId = null;
+        }
         final validSmartIds = _smartTechnicianIds
             .where((id) => technicians.any((tech) => tech.id == id))
             .toSet();
@@ -274,10 +281,65 @@ class _DispatchBoardScreenState extends ConsumerState<DispatchBoardScreen> {
       .where(_isAssigned)
       .toList(growable: false);
 
-  List<ServiceRequestModel> get _displayedJobs =>
-      _listMode == _DispatchListMode.unassigned
-          ? _unassignedVisibleJobs
-          : _assignedVisibleJobs;
+  List<ServiceRequestModel> get _displayedJobs {
+    var values = _visibleJobs.toList(growable: true);
+    final filterTech = _filterTechnicianId?.trim() ?? '';
+    if (filterTech.isNotEmpty) {
+      values = values
+          .where((job) => job.assignedTechnicianId?.trim() == filterTech)
+          .toList(growable: true);
+    }
+    final query = _routeSearch.trim().toLowerCase();
+    if (query.isNotEmpty) {
+      values = values.where((job) {
+        return job.customerName.toLowerCase().contains(query) ||
+            job.customerPhone.toLowerCase().contains(query) ||
+            job.customerAddress.toLowerCase().contains(query) ||
+            job.customerCity.toLowerCase().contains(query) ||
+            job.customerDistrict.toLowerCase().contains(query) ||
+            job.serviceType.label.toLowerCase().contains(query);
+      }).toList(growable: true);
+    }
+    switch (_routeSort) {
+      case 'customer':
+        values.sort((a, b) => a.customerName.toLowerCase().compareTo(b.customerName.toLowerCase()));
+        break;
+      case 'district':
+        values.sort((a, b) => a.customerDistrict.toLowerCase().compareTo(b.customerDistrict.toLowerCase()));
+        break;
+      case 'route':
+      default:
+        values.sort((a, b) {
+          final ao = a.routeOrder ?? 9999;
+          final bo = b.routeOrder ?? 9999;
+          if (ao != bo) return ao.compareTo(bo);
+          final ad = a.plannedDate;
+          final bd = b.plannedDate;
+          if (ad != null && bd != null) return ad.compareTo(bd);
+          return a.customerName.compareTo(b.customerName);
+        });
+    }
+    return values;
+  }
+
+  UserManagementUser? get _filterTechnician {
+    final id = _filterTechnicianId;
+    if (id == null) return null;
+    for (final tech in _technicians) {
+      if (tech.id == id) return tech;
+    }
+    return null;
+  }
+
+  double get _displayedRouteKm {
+    final routeJobs = _uniqueVisits(_displayedJobs).map(_toRouteJob).toList(growable: false);
+    return _routeDistance.routeKm(routeJobs) * 1.30;
+  }
+
+  int get _displayedDriveMinutes {
+    final straightKm = _displayedRouteKm / 1.30;
+    return _routeDistance.estimatedDriveMinutes(straightKm);
+  }
 
   List<UserManagementUser> get _smartTechnicians {
     final selected = _technicians
@@ -967,11 +1029,12 @@ class _DispatchBoardScreenState extends ConsumerState<DispatchBoardScreen> {
 
   Future<void> _smartPlan() async {
     if (_validating || _assigning) return;
-    final source = _selectedRequestIds.isEmpty
-        ? _unassignedVisibleJobs
-        : _unassignedVisibleJobs
-            .where((j) => j.id != null && _selectedRequestIds.contains(j.id))
-            .toList(growable: false);
+    final selectedUnassigned = _unassignedVisibleJobs
+        .where((j) => j.id != null && _selectedRequestIds.contains(j.id))
+        .toList(growable: false);
+    final source = selectedUnassigned.isNotEmpty
+        ? selectedUnassigned
+        : _unassignedVisibleJobs;
     if (source.isEmpty) {
       _snack('Planlanacak servis bulunamadı.');
       return;
@@ -1500,9 +1563,8 @@ class _DispatchBoardScreenState extends ConsumerState<DispatchBoardScreen> {
   Widget build(BuildContext context) {
     return ManagementShell(
       role: AppRole.manager,
-      title: 'Bölgeler',
-      subtitle:
-          'Servisleri bölgeye göre görün, haritada kontrol edin ve teknikere atayın.',
+      title: 'Bölgeler & Rota',
+      subtitle: 'Servisleri bölgeye göre görün, haritada kontrol edin ve teknikerlere atayın.',
       dark: false,
       actions: [
         OutlinedButton.icon(
@@ -1554,10 +1616,10 @@ class _DispatchBoardScreenState extends ConsumerState<DispatchBoardScreen> {
   Widget _content() {
     return LayoutBuilder(
       builder: (context, constraints) {
-        final isWide = constraints.maxWidth >= 1180;
-        final padding = constraints.maxWidth < 700 ? 10.0 : 16.0;
+        final isWide = constraints.maxWidth >= 1120;
+        final padding = constraints.maxWidth < 700 ? 10.0 : 14.0;
         return SingleChildScrollView(
-          padding: EdgeInsets.fromLTRB(padding, 10, padding, 20),
+          padding: EdgeInsets.fromLTRB(padding, 10, padding, 18),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
@@ -1565,23 +1627,21 @@ class _DispatchBoardScreenState extends ConsumerState<DispatchBoardScreen> {
               const SizedBox(height: 12),
               if (isWide)
                 SizedBox(
-                  height: 790,
+                  height: 760,
                   child: Row(
                     crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
-                      Expanded(flex: 5, child: _jobsPanel()),
+                      SizedBox(width: 440, child: _jobsPanel()),
                       const SizedBox(width: 12),
-                      Expanded(flex: 11, child: _yandexPanel()),
+                      Expanded(child: _yandexPanel()),
                     ],
                   ),
                 )
               else ...[
-                SizedBox(height: 540, child: _jobsPanel()),
+                SizedBox(height: 600, child: _jobsPanel()),
                 const SizedBox(height: 12),
-                SizedBox(height: 620, child: _yandexPanel()),
+                SizedBox(height: 600, child: _yandexPanel()),
               ],
-              const SizedBox(height: 10),
-              _bottomStats(),
             ],
           ),
         );
@@ -1664,8 +1724,18 @@ class _DispatchBoardScreenState extends ConsumerState<DispatchBoardScreen> {
   }
 
   Widget _locationPanel() {
+    final filteredTech = _filterTechnician;
+    final districtLabel = _selectedDistricts.isEmpty ||
+            _selectedDistricts.length == _districts.length
+        ? 'Tümü (${_districts.length} ilçe)'
+        : '${_selectedDistricts.length} ilçe seçili';
+    final dateLabel = _selectedPlanDate == null
+        ? 'Tüm Tarihler'
+        : '${_selectedPlanDate!.day.toString().padLeft(2, '0')}.${_selectedPlanDate!.month.toString().padLeft(2, '0')}.${_selectedPlanDate!.year}';
+    final summaryName = filteredTech?.fullName ?? 'Tüm Teknisyenler';
+
     return Container(
-      padding: const EdgeInsets.all(14),
+      padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
         color: _panel,
         borderRadius: BorderRadius.circular(14),
@@ -1673,14 +1743,17 @@ class _DispatchBoardScreenState extends ConsumerState<DispatchBoardScreen> {
       ),
       child: LayoutBuilder(
         builder: (context, constraints) {
-          final compact = constraints.maxWidth < 1050;
+          final compact = constraints.maxWidth < 1180;
+
           final city = SizedBox(
-            width: compact ? double.infinity : 250,
+            width: compact ? double.infinity : 180,
             child: DropdownButtonFormField<String>(
               value: _selectedCity,
+              isExpanded: true,
               decoration: const InputDecoration(
                 labelText: 'İl',
-                prefixIcon: Icon(Icons.location_city_outlined),
+                prefixIcon: Icon(Icons.location_city_outlined, size: 19),
+                contentPadding: EdgeInsets.symmetric(horizontal: 10, vertical: 10),
               ),
               items: _cities
                   .map((value) => DropdownMenuItem(value: value, child: Text(value)))
@@ -1688,233 +1761,155 @@ class _DispatchBoardScreenState extends ConsumerState<DispatchBoardScreen> {
               onChanged: _changeCity,
             ),
           );
+
           final district = SizedBox(
-            width: compact ? double.infinity : 330,
+            width: compact ? double.infinity : 235,
             child: OutlinedButton.icon(
               onPressed: _selectedCity == null ? null : _chooseDistricts,
-              icon: const Icon(Icons.checklist_rounded),
+              icon: const Icon(Icons.location_on_outlined, size: 19),
               label: Align(
                 alignment: Alignment.centerLeft,
-                child: Text(
-                  _selectedDistricts.isEmpty || _selectedDistricts.length == _districts.length
-                      ? 'Tüm $_selectedCity (${_cityRequests.length} iş)'
-                      : '${_selectedDistricts.length} ilçe seçili • $_selectedAreaLabel',
-                  overflow: TextOverflow.ellipsis,
-                ),
+                child: Text(districtLabel, overflow: TextOverflow.ellipsis),
+              ),
+              style: OutlinedButton.styleFrom(
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 16),
               ),
             ),
           );
-          final dateFilter = SizedBox(
-            width: compact ? double.infinity : 210,
+
+          final date = SizedBox(
+            width: compact ? double.infinity : 170,
             child: OutlinedButton.icon(
               onPressed: _pickPlanDate,
-              icon: const Icon(Icons.calendar_month_outlined),
-              label: Text(
-                _selectedPlanDate == null
-                    ? 'Tüm Tarihler'
-                    : '${_selectedPlanDate!.day.toString().padLeft(2, '0')}.${_selectedPlanDate!.month.toString().padLeft(2, '0')}.${_selectedPlanDate!.year}',
+              icon: const Icon(Icons.calendar_month_outlined, size: 19),
+              label: Text(dateLabel, overflow: TextOverflow.ellipsis),
+              style: OutlinedButton.styleFrom(
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 16),
               ),
             ),
           );
-          final technician = SizedBox(
-            width: compact ? double.infinity : 330,
-            child: DropdownButtonFormField<String>(
-              value: _selectedTechnicianId,
+
+          final technicianFilter = SizedBox(
+            width: compact ? double.infinity : 235,
+            child: DropdownButtonFormField<String?>(
+              value: _filterTechnicianId,
+              isExpanded: true,
               decoration: const InputDecoration(
-                labelText: 'Tekniker Ata / Değiştir',
-                prefixIcon: Icon(Icons.person_add_alt_1_outlined),
+                labelText: 'Teknisyen',
+                prefixIcon: Icon(Icons.person_outline_rounded, size: 19),
+                contentPadding: EdgeInsets.symmetric(horizontal: 10, vertical: 10),
               ),
-              items: _technicians.map((tech) {
-                return DropdownMenuItem(
-                  value: tech.id,
-                  child: Text(
-                    '${tech.fullName} • ${_todayCountForTechnician(tech.id)} iş',
+              items: [
+                const DropdownMenuItem<String?>(value: null, child: Text('Tüm Teknisyenler')),
+                ..._technicians.map((tech) => DropdownMenuItem<String?>(
+                      value: tech.id,
+                      child: Text(tech.fullName, overflow: TextOverflow.ellipsis),
+                    )),
+              ],
+              onChanged: (value) async {
+                setState(() {
+                  _filterTechnicianId = value;
+                  _selectedRequestIds.clear();
+                });
+                await _validateVisibleAddresses();
+                await _refreshEmbeddedYandex();
+              },
+            ),
+          );
+
+          final summary = Container(
+            constraints: const BoxConstraints(minWidth: 155),
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+            decoration: BoxDecoration(
+              color: const Color(0xFFF5F3FF),
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(color: const Color(0xFFE5DFFF)),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(summaryName,
+                    maxLines: 1,
                     overflow: TextOverflow.ellipsis,
-                  ),
-                );
-              }).toList(growable: false),
-              onChanged: (value) => setState(() => _selectedTechnicianId = value),
+                    style: const TextStyle(fontWeight: FontWeight.w800)),
+                const SizedBox(height: 2),
+                Text('${_displayedJobs.length} iş • ${_uniqueVisibleCustomers.length} haritada',
+                    style: const TextStyle(color: _muted, fontSize: 11)),
+              ],
             ),
           );
 
-          final smartTechs = OutlinedButton.icon(
-            onPressed: _listMode == _DispatchListMode.assigned
-                ? null
-                : _chooseSmartTechnicians,
-            icon: const Icon(Icons.groups_2_outlined),
-            label: Text('Dağıtım: ${_smartTechnicians.length} Tekniker'),
-          );
-
-          final smartPlan = FilledButton.icon(
-            onPressed: _listMode == _DispatchListMode.assigned ||
-                    _assigning ||
-                    _validating ||
-                    _unassignedVisibleJobs.isEmpty ||
-                    _smartTechnicians.isEmpty
-                ? null
-                : _smartPlan,
-            icon: const Icon(Icons.auto_awesome_rounded),
-            label: const Text('Akıllı Rota Planla'),
-          );
-          final selectAll = OutlinedButton.icon(
-            onPressed: _displayedJobs.isEmpty
-                ? null
-                : () {
-                    final ids = _displayedJobs.map((e) => e.id).whereType<String>().toSet();
-                    setState(() {
-                      if (_selectedRequestIds.containsAll(ids)) {
-                        _selectedRequestIds.removeAll(ids);
-                      } else {
-                        _selectedRequestIds.addAll(ids);
-                      }
-                    });
-                  },
-            icon: const Icon(Icons.select_all_rounded),
-            label: Text(_selectedRequestIds.isEmpty ? 'Tümünü Seç' : 'Seçimi Değiştir'),
-          );
-          final assign = FilledButton.icon(
-            onPressed: _assigning ||
-                    _selectedTechnicianId == null ||
-                    _selectedRequestIds.isEmpty
-                ? null
-                : _assignSelected,
-            icon: _assigning
-                ? const SizedBox(
-                    width: 16,
-                    height: 16,
-                    child: CircularProgressIndicator(strokeWidth: 2),
-                  )
-                : const Icon(Icons.send_rounded),
-            label: Text(
-              _selectedRequestIds.isEmpty
-                  ? (_listMode == _DispatchListMode.assigned ? 'Teknikeri Değiştir' : 'Toplu Ata')
-                  : (_listMode == _DispatchListMode.assigned
-                      ? '${_selectedRequestIds.length} İşin Teknikerini Değiştir'
-                      : '${_selectedRequestIds.length} İşi Ata'),
-            ),
-          );
-
-          return Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
+          final smartPlan = Row(
+            mainAxisSize: MainAxisSize.min,
             children: [
-              const Row(
-                children: [
-                  Icon(Icons.location_on_outlined, color: _teal),
-                  SizedBox(width: 8),
-                  Text('Bölgeler',
-                      style: TextStyle(fontSize: 17, fontWeight: FontWeight.w900)),
-                  SizedBox(width: 10),
-                  Expanded(
-                    child: Text(
-                      'İlçeleri birlikte seçin; işleri mesafeye göre planlayın veya istediğiniz teknikere toplu atayın.',
-                      style: TextStyle(color: _muted, fontSize: 12),
-                    ),
+              FilledButton.icon(
+                onPressed: _assigning ||
+                        _validating ||
+                        _unassignedVisibleJobs.isEmpty ||
+                        _smartTechnicians.isEmpty
+                    ? null
+                    : _smartPlan,
+                icon: const Icon(Icons.auto_awesome_rounded),
+                label: const Text('Akıllı Rota Planla'),
+                style: FilledButton.styleFrom(
+                  backgroundColor: const Color(0xFF0797A9),
+                  padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 17),
+                  shape: const RoundedRectangleBorder(
+                    borderRadius: BorderRadius.horizontal(left: Radius.circular(10)),
                   ),
-                ],
+                ),
               ),
-              const SizedBox(height: 12),
-              Row(
-                children: [
-                  Expanded(
-                    child: SegmentedButton<_DispatchListMode>(
-                      segments: [
-                        ButtonSegment(
-                          value: _DispatchListMode.unassigned,
-                          icon: const Icon(Icons.pending_actions_outlined),
-                          label: Text('Atama Bekleyenler (${_unassignedVisibleJobs.length})'),
-                        ),
-                        ButtonSegment(
-                          value: _DispatchListMode.assigned,
-                          icon: const Icon(Icons.assignment_turned_in_outlined),
-                          label: Text('Atananlar (${_assignedVisibleJobs.length})'),
-                        ),
-                      ],
-                      selected: {_listMode},
-                      onSelectionChanged: (selection) =>
-                          _changeListMode(selection.first),
-                    ),
+              const SizedBox(width: 1),
+              FilledButton(
+                onPressed: _assigning ? null : _chooseSmartTechnicians,
+                style: FilledButton.styleFrom(
+                  backgroundColor: const Color(0xFF0797A9),
+                  minimumSize: const Size(44, 52),
+                  padding: EdgeInsets.zero,
+                  shape: const RoundedRectangleBorder(
+                    borderRadius: BorderRadius.horizontal(right: Radius.circular(10)),
                   ),
-                ],
+                ),
+                child: const Icon(Icons.keyboard_arrow_down_rounded),
               ),
-              const SizedBox(height: 12),
-              if (compact)
-                Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    city,
-                    const SizedBox(height: 10),
-                    district,
-                    const SizedBox(height: 10),
-                    Row(children: [Expanded(child: dateFilter), if (_selectedPlanDate != null) ...[const SizedBox(width: 6), IconButton(tooltip: 'Tarih filtresini temizle', onPressed: _clearPlanDate, icon: const Icon(Icons.close_rounded))]]),
-                    const SizedBox(height: 10),
-                    technician,
-                    const SizedBox(height: 10),
-                    SizedBox(width: double.infinity, child: smartTechs),
-                    const SizedBox(height: 10),
-                    Row(children: [Expanded(child: smartPlan), const SizedBox(width: 8), Expanded(child: selectAll)]),
-                    const SizedBox(height: 8),
-                    SizedBox(width: double.infinity, child: assign),
-                  ],
-                )
-              else
-                Column(
-                  children: [
-                    Row(
-                      children: [
-                        city,
-                        const SizedBox(width: 10),
-                        district,
-                        const SizedBox(width: 10),
-                        dateFilter,
-                        if (_selectedPlanDate != null)
-                          IconButton(
-                            tooltip: 'Tarih filtresini temizle',
-                            onPressed: _clearPlanDate,
-                            icon: const Icon(Icons.close_rounded),
-                          ),
-                        const SizedBox(width: 10),
-                        Expanded(child: technician),
-                      ],
-                    ),
-                    const SizedBox(height: 10),
-                    Row(
-                      children: [
-                        smartTechs,
-                        const SizedBox(width: 8),
-                        smartPlan,
-                        const Spacer(),
-                        selectAll,
-                        const SizedBox(width: 8),
-                        assign,
-                      ],
-                    ),
-                  ],
-                ),
-              if (_selectedRequestIds.isNotEmpty) ...[
-                const SizedBox(height: 10),
-                Wrap(
-                  spacing: 8,
-                  runSpacing: 8,
-                  children: [
-                    OutlinedButton.icon(
-                      onPressed: _assigning ? null : _setSelectedDate,
-                      icon: const Icon(Icons.event_rounded),
-                      label: const Text('Toplu Tarih'),
-                    ),
-                    if (_listMode == _DispatchListMode.assigned)
-                      OutlinedButton.icon(
-                        onPressed: _assigning ? null : _unassignSelected,
-                        icon: const Icon(Icons.undo_rounded),
-                        label: const Text('Atamayı Kaldır'),
-                      ),
-                  ],
-                ),
+            ],
+          );
+
+          if (compact) {
+            return Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Row(children: [Expanded(child: city), const SizedBox(width: 8), Expanded(child: district)]),
                 const SizedBox(height: 8),
-                Text(
-                  '${_selectedRequestIds.length} iş seçili • Toplu tarih, atama/değiştirme ve atamayı kaldırma kullanabilirsiniz.',
-                  style: const TextStyle(color: _muted, fontSize: 11),
+                Row(children: [Expanded(child: date), const SizedBox(width: 8), Expanded(child: technicianFilter)]),
+                const SizedBox(height: 8),
+                Row(children: [Expanded(child: summary), const SizedBox(width: 8), smartPlan]),
+              ],
+            );
+          }
+
+          return Row(
+            children: [
+              city,
+              const SizedBox(width: 8),
+              district,
+              const SizedBox(width: 8),
+              date,
+              if (_selectedPlanDate != null) ...[
+                const SizedBox(width: 2),
+                IconButton(
+                  tooltip: 'Tarih filtresini temizle',
+                  onPressed: _clearPlanDate,
+                  icon: const Icon(Icons.close_rounded, size: 19),
                 ),
               ],
+              const SizedBox(width: 6),
+              technicianFilter,
+              const SizedBox(width: 8),
+              Expanded(child: summary),
+              const SizedBox(width: 8),
+              smartPlan,
             ],
           );
         },
@@ -1922,16 +1917,61 @@ class _DispatchBoardScreenState extends ConsumerState<DispatchBoardScreen> {
     );
   }
 
+  Future<void> _pickAssignmentTechnicianAndAssign() async {
+    if (_selectedRequestIds.isEmpty || _assigning) return;
+    String? pickedId = _selectedTechnicianId;
+    final result = await showDialog<String>(
+      context: context,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: const Text('Teknisyen Değiştir / Ata'),
+          content: SizedBox(
+            width: 420,
+            child: DropdownButtonFormField<String>(
+              value: pickedId,
+              isExpanded: true,
+              decoration: const InputDecoration(
+                labelText: 'Teknisyen',
+                prefixIcon: Icon(Icons.engineering_outlined),
+              ),
+              items: _technicians
+                  .map((tech) => DropdownMenuItem(
+                        value: tech.id,
+                        child: Text(tech.fullName, overflow: TextOverflow.ellipsis),
+                      ))
+                  .toList(growable: false),
+              onChanged: (value) => setDialogState(() => pickedId = value),
+            ),
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(dialogContext), child: const Text('Vazgeç')),
+            FilledButton(
+              onPressed: pickedId == null ? null : () => Navigator.pop(dialogContext, pickedId),
+              child: const Text('Uygula'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (result == null || !mounted) return;
+    setState(() => _selectedTechnicianId = result);
+    await _assignSelected();
+  }
+
+  String _routeTimeLabel(ServiceRequestModel job) {
+    final local = job.plannedDate?.toLocal();
+    if (local == null) return 'Tarih yok';
+    if (local.hour == 0 && local.minute == 0) return 'Gün içinde';
+    return '${local.hour.toString().padLeft(2, '0')}:${local.minute.toString().padLeft(2, '0')}';
+  }
+
   Widget _jobsPanel() {
     final jobs = _displayedJobs;
-    final selectedTotal = _listMode == _DispatchListMode.assigned
-        ? jobs.fold<double>(0, (sum, r) => sum + r.price)
-        : jobs
-            .where((r) => r.id != null && _selectedRequestIds.contains(r.id))
-            .fold<double>(0, (sum, r) => sum + r.price);
+    final filteredTech = _filterTechnician;
+    final allIds = jobs.map((e) => e.id).whereType<String>().toSet();
+    final allSelected = allIds.isNotEmpty && _selectedRequestIds.containsAll(allIds);
 
     return Container(
-      constraints: const BoxConstraints(minHeight: 720),
       decoration: BoxDecoration(
         color: _panel,
         borderRadius: BorderRadius.circular(14),
@@ -1940,80 +1980,122 @@ class _DispatchBoardScreenState extends ConsumerState<DispatchBoardScreen> {
       child: Column(
         children: [
           Padding(
-            padding: const EdgeInsets.fromLTRB(16, 14, 16, 12),
+            padding: const EdgeInsets.fromLTRB(14, 13, 14, 10),
             child: Row(
               children: [
-                const Icon(Icons.people_alt_outlined, color: _teal),
-                const SizedBox(width: 8),
                 Expanded(
                   child: Text(
-                    _selectedCity == null
-                        ? 'İl Seçin'
-                        : _listMode == _DispatchListMode.unassigned
-                            ? '$_selectedAreaLabel • Atama Bekleyenler (${jobs.length})'
-                            : '$_selectedAreaLabel • Atananlar (${jobs.length})',
-                    style: const TextStyle(
-                        fontSize: 16, fontWeight: FontWeight.w900),
+                    filteredTech == null
+                        ? '$_selectedAreaLabel • İşler (${jobs.length})'
+                        : '${filteredTech.fullName} • Atanan İşler (${jobs.length})',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w900),
                   ),
                 ),
-                TextButton(
-                  onPressed: jobs.isEmpty
-                      ? null
-                      : () {
-                          final ids =
-                              jobs.map((e) => e.id).whereType<String>().toSet();
-                          setState(() {
-                            if (_selectedRequestIds.containsAll(ids)) {
-                              _selectedRequestIds.removeAll(ids);
-                            } else {
-                              _selectedRequestIds.addAll(ids);
-                            }
-                          });
-                        },
-                  child: const Text('Tümünü Seç / Kaldır'),
+                const SizedBox(width: 8),
+                SizedBox(
+                  width: 130,
+                  child: DropdownButtonFormField<String>(
+                    value: _routeSort,
+                    isDense: true,
+                    decoration: const InputDecoration(
+                      contentPadding: EdgeInsets.symmetric(horizontal: 10, vertical: 10),
+                    ),
+                    items: const [
+                      DropdownMenuItem(value: 'route', child: Text('Rota Sırası')),
+                      DropdownMenuItem(value: 'customer', child: Text('Müşteri A-Z')),
+                      DropdownMenuItem(value: 'district', child: Text('İlçe A-Z')),
+                    ],
+                    onChanged: (value) => setState(() => _routeSort = value ?? 'route'),
+                  ),
                 ),
               ],
             ),
           ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(12, 0, 12, 10),
+            child: TextField(
+              onChanged: (value) async {
+                setState(() => _routeSearch = value);
+                await _refreshEmbeddedYandex();
+              },
+              decoration: const InputDecoration(
+                hintText: 'Müşteri adı, adres veya telefon ara...',
+                prefixIcon: Icon(Icons.search_rounded),
+                isDense: true,
+              ),
+            ),
+          ),
           const Divider(height: 1, color: _border),
           if (jobs.isEmpty)
-            Expanded(
+            const Expanded(
               child: Center(
-                child: Text(
-                  _listMode == _DispatchListMode.unassigned
-                      ? 'Bu bölgede atama bekleyen servis yok.'
-                      : 'Bu bölgede atanmış servis yok.',
-                  style: const TextStyle(color: _muted),
-                ),
+                child: Text('Seçilen bölge ve teknisyene uygun servis yok.', style: TextStyle(color: _muted)),
               ),
             )
           else
             Expanded(
               child: ListView.separated(
-                shrinkWrap: true,
                 itemCount: jobs.length,
-                separatorBuilder: (_, __) =>
-                    const Divider(height: 1, color: _border),
-                itemBuilder: (context, index) => _jobRow(jobs[index]),
+                separatorBuilder: (_, __) => const Divider(height: 1, color: _border),
+                itemBuilder: (context, index) => _jobRow(jobs[index], index),
               ),
             ),
           Container(
-            padding: const EdgeInsets.all(14),
+            padding: const EdgeInsets.fromLTRB(10, 8, 10, 8),
             decoration: const BoxDecoration(
-              color: Color(0xFFF5F8FA),
+              color: Color(0xFFFBFCFD),
+              border: Border(top: BorderSide(color: _border)),
+            ),
+            child: Wrap(
+              crossAxisAlignment: WrapCrossAlignment.center,
+              spacing: 6,
+              runSpacing: 6,
+              children: [
+                Checkbox(
+                  value: allSelected,
+                  onChanged: allIds.isEmpty
+                      ? null
+                      : (value) => setState(() {
+                            if (value == true) {
+                              _selectedRequestIds.addAll(allIds);
+                            } else {
+                              _selectedRequestIds.removeAll(allIds);
+                            }
+                          }),
+                ),
+                Text('${_selectedRequestIds.length} iş seçildi', style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w700)),
+                OutlinedButton(
+                  onPressed: _selectedRequestIds.isEmpty ? null : _pickAssignmentTechnicianAndAssign,
+                  child: const Text('Teknisyen Değiştir'),
+                ),
+                OutlinedButton(
+                  onPressed: _selectedRequestIds.isEmpty || _assigning ? null : _setSelectedDate,
+                  child: const Text('Tarihi Değiştir'),
+                ),
+                OutlinedButton.icon(
+                  onPressed: _selectedRequestIds.isEmpty || _assigning ? null : _unassignSelected,
+                  icon: const Icon(Icons.delete_outline_rounded, size: 17),
+                  label: const Text('Atamadan Çıkar'),
+                  style: OutlinedButton.styleFrom(foregroundColor: _danger),
+                ),
+              ],
+            ),
+          ),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+            decoration: const BoxDecoration(
+              color: Color(0xFFF8FAFC),
               border: Border(top: BorderSide(color: _border)),
             ),
             child: Row(
               children: [
-                Text(_listMode == _DispatchListMode.unassigned ? 'Seçili ${_selectedRequestIds.length} iş' : 'Atanmış ${jobs.length} iş'),
-                const Spacer(),
-                Text(
-                  'Tahmini Ciro: ${_money(selectedTotal)}',
-                  style: const TextStyle(
-                    color: _blue,
-                    fontWeight: FontWeight.w900,
-                  ),
-                ),
+                Expanded(child: _routeStat('Toplam İş', '${jobs.length}', 'Seçili görünüm')),
+                Container(width: 1, height: 42, color: _border),
+                Expanded(child: _routeStat('Tahmini Süre', _driveLabel(_displayedDriveMinutes), 'Rota sürüşü')),
+                Container(width: 1, height: 42, color: _border),
+                Expanded(child: _routeStat('Toplam Mesafe', '${_displayedRouteKm.toStringAsFixed(0)} km', 'Tahmini rota')),
               ],
             ),
           ),
@@ -2022,60 +2104,154 @@ class _DispatchBoardScreenState extends ConsumerState<DispatchBoardScreen> {
     );
   }
 
-  Widget _jobRow(ServiceRequestModel job) {
+  Widget _routeStat(String title, String value, String subtitle) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 8),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(title, style: const TextStyle(color: _muted, fontSize: 10)),
+          const SizedBox(height: 2),
+          Text(value, style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w900)),
+          Text(subtitle, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(color: _muted, fontSize: 9)),
+        ],
+      ),
+    );
+  }
+
+  Widget _jobRow(ServiceRequestModel job, int index) {
     final id = job.id;
     final checked = id != null && _selectedRequestIds.contains(id);
-    final local = job.plannedDate?.toLocal();
-    final when = local == null
-        ? 'Tarih yok'
-        : '${local.day.toString().padLeft(2, '0')}.${local.month.toString().padLeft(2, '0')} • ${local.hour.toString().padLeft(2, '0')}:${local.minute.toString().padLeft(2, '0')}';
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-      child: Row(children: [
-        Checkbox(
-          value: checked,
-          onChanged: id == null ? null : (value) => setState(() {
-            if (value == true) { _selectedRequestIds.add(id); } else { _selectedRequestIds.remove(id); }
-          }),
-        ),
-        const SizedBox(width: 5),
-        Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Text(job.customerName.isEmpty ? 'Müşteri' : job.customerName, style: const TextStyle(fontWeight: FontWeight.w900)),
-          const SizedBox(height: 4),
-          Text('${job.customerCity.isEmpty ? '-' : job.customerCity} • ${job.customerDistrict.isEmpty ? '-' : job.customerDistrict}', style: const TextStyle(color: _muted, fontSize: 12)),
-          const SizedBox(height: 3),
-          Text(when, style: const TextStyle(color: _muted, fontSize: 11)),
-        ])),
-        if (_isAssigned(job) && job.assignedTechnicianName.isNotEmpty)
-          SizedBox(width: 110, child: Text(job.assignedTechnicianName, textAlign: TextAlign.right, maxLines: 2, overflow: TextOverflow.ellipsis, style: const TextStyle(color: _success, fontSize: 11, fontWeight: FontWeight.w700)))
-        else
-          const Text('Atanmadı', style: TextStyle(color: _warning, fontSize: 11)),
-        const SizedBox(width: 4),
-        PopupMenuButton<String>(
-          tooltip: 'İşlemler',
-          onSelected: (value) async {
-            if (value == 'date') {
-              await _setOneDate(job);
-            } else if (value == 'unassign') {
-              await _unassignOne(job);
-            } else if (value == 'select') {
-              if (id != null) {
-                setState(() {
-                  _selectedRequestIds
-                    ..clear()
-                    ..add(id);
-                });
-              }
-            }
-          },
-          itemBuilder: (context) => [
-            const PopupMenuItem(value: 'date', child: Row(children: [Icon(Icons.event_rounded), SizedBox(width: 10), Text('Tarihi Değiştir')])),
-            if (_isAssigned(job))
-              const PopupMenuItem(value: 'unassign', child: Row(children: [Icon(Icons.undo_rounded), SizedBox(width: 10), Text('Atamayı Kaldır')])),
-            const PopupMenuItem(value: 'select', child: Row(children: [Icon(Icons.swap_horiz_rounded), SizedBox(width: 10), Text('Tekniker Değiştirmek İçin Seç')])),
+    final order = job.routeOrder ?? (index + 1);
+    final serviceLabel = job.plannedProductName.trim().isEmpty
+        ? job.serviceType.label
+        : '${job.serviceType.label} • ${job.plannedProductName.trim()}';
+
+    return InkWell(
+      onTap: id == null
+          ? null
+          : () async {
+              setState(() {
+                _selectedRequestIds
+                  ..clear()
+                  ..add(id);
+              });
+              await _refreshEmbeddedYandex();
+            },
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 9),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Checkbox(
+              value: checked,
+              onChanged: id == null
+                  ? null
+                  : (value) => setState(() {
+                        if (value == true) {
+                          _selectedRequestIds.add(id);
+                        } else {
+                          _selectedRequestIds.remove(id);
+                        }
+                      }),
+            ),
+            Container(
+              width: 28,
+              height: 28,
+              margin: const EdgeInsets.only(top: 2),
+              alignment: Alignment.center,
+              decoration: BoxDecoration(
+                color: const Color(0xFFF4F0FF),
+                shape: BoxShape.circle,
+                border: Border.all(color: const Color(0xFFE5DFFF)),
+              ),
+              child: Text('$order', style: const TextStyle(color: Color(0xFF7653D6), fontWeight: FontWeight.w900)),
+            ),
+            const SizedBox(width: 9),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          job.customerName.isEmpty ? 'Müşteri' : job.customerName,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(fontWeight: FontWeight.w900),
+                        ),
+                      ),
+                      const SizedBox(width: 6),
+                      _serviceChip(serviceLabel),
+                    ],
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    job.customerAddress.trim().isEmpty
+                        ? '${job.customerDistrict} / ${job.customerCity}'
+                        : job.customerAddress.trim(),
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(color: _muted, fontSize: 11),
+                  ),
+                  const SizedBox(height: 2),
+                  Row(
+                    children: [
+                      const Icon(Icons.location_on_outlined, size: 12, color: _muted),
+                      const SizedBox(width: 3),
+                      Expanded(
+                        child: Text('${job.customerDistrict} / ${job.customerCity}', maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(color: _muted, fontSize: 10)),
+                      ),
+                      if (job.customerPhone.trim().isNotEmpty) ...[
+                        const SizedBox(width: 6),
+                        const Icon(Icons.phone_outlined, size: 12, color: _muted),
+                        const SizedBox(width: 3),
+                        Text(job.customerPhone, style: const TextStyle(color: _muted, fontSize: 10)),
+                      ],
+                    ],
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(width: 8),
+            SizedBox(
+              width: 62,
+              child: Text(
+                _routeTimeLabel(job),
+                textAlign: TextAlign.right,
+                style: const TextStyle(fontSize: 10, fontWeight: FontWeight.w800, color: Color(0xFF526277)),
+              ),
+            ),
+            const SizedBox(width: 2),
+            PopupMenuButton<String>(
+              tooltip: 'İşlemler',
+              onSelected: (value) async {
+                if (value == 'date') {
+                  await _setOneDate(job);
+                } else if (value == 'unassign') {
+                  await _unassignOne(job);
+                } else if (value == 'select') {
+                  if (id != null) {
+                    setState(() {
+                      _selectedRequestIds
+                        ..clear()
+                        ..add(id);
+                    });
+                    await _pickAssignmentTechnicianAndAssign();
+                  }
+                }
+              },
+              itemBuilder: (context) => [
+                const PopupMenuItem(value: 'date', child: Row(children: [Icon(Icons.event_rounded), SizedBox(width: 10), Text('Tarihi Değiştir')])),
+                if (_isAssigned(job))
+                  const PopupMenuItem(value: 'unassign', child: Row(children: [Icon(Icons.undo_rounded), SizedBox(width: 10), Text('Atamayı Kaldır')])),
+                const PopupMenuItem(value: 'select', child: Row(children: [Icon(Icons.swap_horiz_rounded), SizedBox(width: 10), Text('Teknisyen Değiştir')])),
+              ],
+            ),
           ],
         ),
-      ]),
+      ),
     );
   }
 
@@ -2274,13 +2450,14 @@ class _DispatchBoardScreenState extends ConsumerState<DispatchBoardScreen> {
   }
 
   Widget _yandexPanel() {
-    final mapUrl = _staticMapUrl;
-    final totalCustomers = _uniqueVisibleCustomers.length;
-
     Widget mapBody() {
-      if (mapUrl != null) {
+      if (Platform.isWindows && _yandexWebReady) {
+        return _embeddedYandexMap(expand: true);
+      }
+      final staticUrl = _staticMapUrl;
+      if (staticUrl != null) {
         return Image.network(
-          mapUrl,
+          staticUrl,
           fit: BoxFit.cover,
           width: double.infinity,
           height: double.infinity,
@@ -2298,90 +2475,91 @@ class _DispatchBoardScreenState extends ConsumerState<DispatchBoardScreen> {
         borderRadius: BorderRadius.circular(14),
         border: Border.all(color: _border),
       ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
+      child: Stack(
         children: [
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-            child: Row(
-              children: [
-                const Icon(Icons.map_outlined, color: _teal),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: Text(
-                    'Yandex Harita • $_selectedAreaLabel',
-                    style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w900),
-                  ),
-                ),
-                if (_validating)
-                  const Padding(
-                    padding: EdgeInsets.only(right: 10),
-                    child: SizedBox(
-                      width: 18,
-                      height: 18,
-                      child: CircularProgressIndicator(strokeWidth: 2),
+          Positioned.fill(child: mapBody()),
+          Positioned(
+            left: 14,
+            top: 14,
+            child: Container(
+              constraints: const BoxConstraints(maxWidth: 360),
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
+              decoration: BoxDecoration(
+                color: Colors.white.withValues(alpha: .94),
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: _border),
+                boxShadow: const [BoxShadow(color: Color(0x18000000), blurRadius: 10)],
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Icon(Icons.route_rounded, color: Color(0xFF7653D6), size: 18),
+                  const SizedBox(width: 7),
+                  Flexible(
+                    child: Text(
+                      '$_selectedAreaLabel • ${_displayedJobs.length} iş • ${_uniqueVisibleCustomers.length} nokta',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w800),
                     ),
                   ),
-                OutlinedButton.icon(
-                  onPressed: _displayedJobs.isEmpty
-                      ? null
-                      : () => _openInYandex(selectedOnly: false),
-                  icon: const Icon(Icons.open_in_new_rounded, size: 17),
-                  label: const Text('Yandex’te Aç'),
-                ),
-              ],
+                ],
+              ),
             ),
           ),
-          const Divider(height: 1, color: _border),
-          Expanded(child: mapBody()),
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
-            decoration: const BoxDecoration(
-              color: Color(0xFFF5F8FA),
-              border: Border(top: BorderSide(color: _border)),
-            ),
+          Positioned(
+            right: 14,
+            top: 14,
             child: Row(
               children: [
-                Expanded(
-                  child: Wrap(
-                    spacing: 7,
-                    runSpacing: 7,
-                    children: _yandexGeocoderKey.trim().isEmpty
-                        ? [
-                            _statusPill('Müşteri', '$totalCustomers', _blue),
-                            _statusPill('Haritada', '${totalCustomers - _badAddressCount}', _success),
-                            _statusPill('Eksik', '$_badAddressCount', _danger),
-                          ]
-                        : [
-                            _statusPill('Müşteri', '$totalCustomers', _blue),
-                            _statusPill('Bulundu', '$_foundAddressCount', _success),
-                            _statusPill('Hatalı', '$_badAddressCount', _danger),
-                          ],
+                Material(
+                  color: Colors.white.withValues(alpha: .95),
+                  borderRadius: BorderRadius.circular(10),
+                  child: IconButton(
+                    tooltip: 'Haritayı Yenile',
+                    onPressed: _displayedJobs.isEmpty
+                        ? null
+                        : () async {
+                            if (_yandexGeocoderKey.trim().isNotEmpty) {
+                              await _validateVisibleAddresses(force: true);
+                            }
+                            _lastEmbeddedYandexUrl = null;
+                            await _refreshEmbeddedYandex();
+                          },
+                    icon: const Icon(Icons.refresh_rounded),
                   ),
                 ),
-                const SizedBox(width: 8),
-                IconButton(
-                  tooltip: 'Haritayı Yenile',
-                  onPressed: _displayedJobs.isEmpty
-                      ? null
-                      : () async {
-                          if (_yandexGeocoderKey.trim().isNotEmpty) {
-                            await _validateVisibleAddresses(force: true);
-                          }
-                          await _refreshEmbeddedYandex();
-                        },
-                  icon: const Icon(Icons.refresh_rounded),
-                ),
-                FilledButton.tonalIcon(
-                  onPressed: _selectedRequestIds.isEmpty
-                      ? null
-                      : () => _openInYandex(selectedOnly: true),
-                  icon: const Icon(Icons.route_outlined),
-                  label: const Text('Seçili Rota'),
+                const SizedBox(width: 7),
+                Material(
+                  color: Colors.white.withValues(alpha: .95),
+                  borderRadius: BorderRadius.circular(10),
+                  child: TextButton.icon(
+                    onPressed: _displayedJobs.isEmpty ? null : () => _openInYandex(selectedOnly: false),
+                    icon: const Icon(Icons.open_in_new_rounded, size: 17),
+                    label: const Text('Yandex’te Aç'),
+                  ),
                 ),
               ],
             ),
           ),
+          if (_validating)
+            const Positioned(
+              right: 18,
+              bottom: 18,
+              child: Card(
+                child: Padding(
+                  padding: EdgeInsets.symmetric(horizontal: 12, vertical: 9),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2)),
+                      SizedBox(width: 8),
+                      Text('Adresler kontrol ediliyor...'),
+                    ],
+                  ),
+                ),
+              ),
+            ),
         ],
       ),
     );
@@ -2390,29 +2568,7 @@ class _DispatchBoardScreenState extends ConsumerState<DispatchBoardScreen> {
   Widget _embeddedYandexMap({bool expand = false}) {
     Widget content;
     if (Platform.isWindows && _yandexWebReady) {
-      content = Stack(
-        children: [
-          Positioned.fill(child: Webview(_yandexWebController)),
-          Positioned(
-            left: 10,
-            top: 10,
-            child: DecoratedBox(
-              decoration: BoxDecoration(
-                color: const Color(0xDD0A1621),
-                borderRadius: BorderRadius.circular(8),
-                border: Border.all(color: _border),
-              ),
-              child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
-                child: Text(
-                  '$_selectedAreaLabel • ${_uniqueVisibleCustomers.length} müşteri',
-                  style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w800),
-                ),
-              ),
-            ),
-          ),
-        ],
-      );
+      content = Webview(_yandexWebController);
     } else {
       content = _mapPlaceholder(
         'Yandex haritası Windows uygulamasında otomatik açılır. '

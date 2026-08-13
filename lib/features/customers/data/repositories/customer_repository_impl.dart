@@ -97,6 +97,7 @@ class CustomerRepositoryImpl implements CustomerRepository {
     int page = 1,
     int pageSize = 25,
     String search = '',
+    String phone = '',
     bool? isActive,
     String city = '',
     String district = '',
@@ -123,6 +124,7 @@ class CustomerRepositoryImpl implements CustomerRepository {
         filters: <String, dynamic>{
           'repositoryCalled': true,
           'search': search.trim(),
+          'phone': phone.trim(),
           'isActive': isActive,
           'city': city.trim(),
           'district': district.trim(),
@@ -158,6 +160,25 @@ class CustomerRepositoryImpl implements CustomerRepository {
         final orExpression = buildCustomerSearchOrExpression(search);
         if (orExpression.isNotEmpty) {
           filterQuery = filterQuery.or(orExpression);
+        }
+      }
+
+      if (phone.trim().isNotEmpty) {
+        final rawPhone = phone
+            .trim()
+            .replaceAll(RegExp(r'[%_(),]'), '')
+            .replaceAll(RegExp(r'\s+'), ' ');
+        final normalizedPhone = phone.replaceAll(RegExp(r'[^0-9]'), '');
+        final phoneVariants = <String>{};
+        if (rawPhone.isNotEmpty) phoneVariants.add(rawPhone);
+        if (normalizedPhone.isNotEmpty) phoneVariants.add(normalizedPhone);
+        if (normalizedPhone.length >= 10) {
+          phoneVariants.add(normalizedPhone.substring(normalizedPhone.length - 10));
+        }
+        if (phoneVariants.isNotEmpty) {
+          filterQuery = filterQuery.or(
+            phoneVariants.map((value) => 'phone.ilike.%$value%').join(','),
+          );
         }
       }
 

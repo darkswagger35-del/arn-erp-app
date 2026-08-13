@@ -19,6 +19,7 @@ class CustomerState {
     this.page = 1,
     this.pageSize = 25,
     this.search = '',
+    this.phone = '',
     this.isActive,
     this.city = '',
     this.district = '',
@@ -37,6 +38,7 @@ class CustomerState {
   final int page;
   final int pageSize;
   final String search;
+  final String phone;
   final bool? isActive;
   final String city;
   final String district;
@@ -64,6 +66,7 @@ class CustomerState {
     int? page,
     int? pageSize,
     String? search,
+    String? phone,
     Object? isActive = _unset,
     String? city,
     String? district,
@@ -85,6 +88,7 @@ class CustomerState {
       page: page ?? this.page,
       pageSize: pageSize ?? this.pageSize,
       search: search ?? this.search,
+      phone: phone ?? this.phone,
       isActive: _pick<bool?>(isActive, this.isActive),
       city: city ?? this.city,
       district: district ?? this.district,
@@ -115,6 +119,7 @@ class CustomerController extends ChangeNotifier {
 
   Future<void> loadCustomers({
     String? search,
+    String? phone,
     Object? isActive = CustomerState._unset,
     String? city,
     String? district,
@@ -123,10 +128,12 @@ class CustomerController extends ChangeNotifier {
     bool resetPage = true,
   }) async {
     final normalizedSearch = search?.trim();
+    final normalizedPhone = phone?.trim();
     final normalizedCity = city?.trim();
     final normalizedDistrict = district?.trim();
     _state = _state.copyWith(
       search: normalizedSearch ?? _state.search,
+      phone: normalizedPhone ?? _state.phone,
       isActive: isActive,
       city: normalizedCity ?? _state.city,
       district: normalizedDistrict ?? _state.district,
@@ -149,6 +156,7 @@ class CustomerController extends ChangeNotifier {
         page: page,
         pageSize: _state.pageSize,
         search: _state.search,
+        phone: _state.phone,
         isActive: _state.isActive,
         city: _state.city,
         district: _state.district,
@@ -183,6 +191,7 @@ class CustomerController extends ChangeNotifier {
 
   Future<void> loadMoreCustomers({
     String? search,
+    String? phone,
     Object? isActive = CustomerState._unset,
     String? city,
     String? district,
@@ -194,10 +203,12 @@ class CustomerController extends ChangeNotifier {
     }
 
     final normalizedSearch = search?.trim();
+    final normalizedPhone = phone?.trim();
     final normalizedCity = city?.trim();
     final normalizedDistrict = district?.trim();
     _state = _state.copyWith(
       search: normalizedSearch ?? _state.search,
+      phone: normalizedPhone ?? _state.phone,
       isActive: isActive,
       city: normalizedCity ?? _state.city,
       district: normalizedDistrict ?? _state.district,
@@ -215,6 +226,7 @@ class CustomerController extends ChangeNotifier {
         page: nextPage,
         pageSize: _state.pageSize,
         search: _state.search,
+        phone: _state.phone,
         isActive: _state.isActive,
         city: _state.city,
         district: _state.district,
@@ -250,6 +262,12 @@ class CustomerController extends ChangeNotifier {
     notifyListeners();
   }
 
+  Future<void> loadPage(int page) async {
+    if (page < 1 || _state.isLoading) return;
+    _state = _state.copyWith(page: page);
+    await loadCustomers(resetPage: false);
+  }
+
   void updateSearch(String value) {
     final normalized = value.trim();
     _debounceTimer?.cancel();
@@ -270,6 +288,7 @@ class CustomerController extends ChangeNotifier {
   }
 
   void updateFilters({
+    String? phone,
     required String city,
     required String district,
     required bool? isActive,
@@ -279,6 +298,7 @@ class CustomerController extends ChangeNotifier {
     _debounceTimer?.cancel();
     _requestSequence++;
     _state = _state.copyWith(
+      phone: phone?.trim() ?? _state.phone,
       city: city.trim(),
       district: district.trim(),
       isActive: isActive,
@@ -467,6 +487,7 @@ class CustomerController extends ChangeNotifier {
       errorMessage: null,
       successMessage: null,
       search: criteria.search,
+      phone: criteria.phone,
       city: criteria.city,
       district: criteria.district,
       isActive: criteria.isActive,
@@ -482,6 +503,7 @@ class CustomerController extends ChangeNotifier {
         page: criteria.page,
         pageSize: criteria.pageSize,
         search: criteria.search,
+        phone: criteria.phone,
         isActive: criteria.isActive,
         city: criteria.city,
         district: criteria.district,

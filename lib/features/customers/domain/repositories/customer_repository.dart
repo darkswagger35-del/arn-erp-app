@@ -5,6 +5,7 @@ abstract class CustomerRepository {
     int page = 1,
     int pageSize = 25,
     String search = '',
+    String phone = '',
     bool? isActive,
     String city = '',
     String district = '',

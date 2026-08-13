@@ -37,10 +37,14 @@ class _ServiceRequestListScreenState
   ServiceRequestType? _selectedType;
   DateTimeRange? _dateRange;
   List<UserManagementUser> _technicians = const [];
+  List<UserManagementUser> _users = const [];
   bool _isLoadingTechnicians = false;
   String? _selectedTechnicianId;
+  String? _selectedCity;
+  String? _selectedDistrict;
+  bool? _locationSortAscending;
   int _page = 0;
-  static const int _pageSize = 10;
+  static const int _pageSize = 20;
   final Set<String> _selectedRequestIds = <String>{};
   bool _bulkBusy = false;
 
@@ -59,10 +63,7 @@ class _ServiceRequestListScreenState
 
   Future<void> _loadData() async {
     await Future.wait([
-      ref.read(serviceRequestControllerProvider).loadServiceRequests(
-            status: _selectedStatus,
-            technicianId: _selectedTechnicianId,
-          ),
+      ref.read(serviceRequestControllerProvider).loadServiceRequests(),
       _loadTechnicians(),
     ]);
   }
@@ -75,6 +76,7 @@ class _ServiceRequestListScreenState
           await ref.read(userManagementRepositoryProvider).listUsers();
       if (!mounted) return;
       setState(() {
+        _users = users;
         _technicians = users
             .where((user) => user.role == AppRole.technician && user.isActive)
             .toList(growable: false)
@@ -100,6 +102,14 @@ class _ServiceRequestListScreenState
 
       final matchesType =
           _selectedType == null || request.serviceType == _selectedType;
+      final matchesStatus =
+          _selectedStatus == null || request.status == _selectedStatus;
+      final matchesTechnician = _selectedTechnicianId == null ||
+          request.assignedTechnicianId == _selectedTechnicianId;
+      final matchesCity = _selectedCity == null ||
+          request.customerCity.trim().toLowerCase() == _selectedCity!.toLowerCase();
+      final matchesDistrict = _selectedDistrict == null ||
+          request.customerDistrict.trim().toLowerCase() == _selectedDistrict!.toLowerCase();
 
       final planned = request.plannedDate;
       final matchesDate = _dateRange == null ||
@@ -108,10 +118,17 @@ class _ServiceRequestListScreenState
               planned.isBefore(_startOfDay(_dateRange!.end)
                   .add(const Duration(days: 1))));
 
-      return matchesSearch && matchesType && matchesDate;
+      return matchesSearch && matchesType && matchesStatus &&
+          matchesTechnician && matchesCity && matchesDistrict && matchesDate;
     }).toList(growable: false);
 
     result.sort((a, b) {
+      if (_locationSortAscending != null) {
+        final aLocation = '${a.customerCity.trim()} ${a.customerDistrict.trim()}'.toLowerCase();
+        final bLocation = '${b.customerCity.trim()} ${b.customerDistrict.trim()}'.toLowerCase();
+        final compared = aLocation.compareTo(bLocation);
+        return _locationSortAscending! ? compared : -compared;
+      }
       final aDate = a.plannedDate ?? a.createdAt ?? DateTime(1970);
       final bDate = b.plannedDate ?? b.createdAt ?? DateTime(1970);
       return bDate.compareTo(aDate);
@@ -317,8 +334,10 @@ class _ServiceRequestListScreenState
           children: [
             _buildSummaryCards(all),
             const SizedBox(height: 16),
-            _buildFilterPanel(),
-            const SizedBox(height: 16),
+            _buildFilterPanel(all),
+            const SizedBox(height: 14),
+            _buildLocationDistribution(all),
+            const SizedBox(height: 14),
             _buildStatusTabs(all),
             if (_canManageApproval) _buildBulkBar(filtered),
             _buildContentCard(
@@ -499,134 +518,113 @@ class _ServiceRequestListScreenState
     );
   }
 
-  Widget _buildFilterPanel() {
+  Widget _buildFilterPanel(List<ServiceRequestModel> requests) {
+    InputDecoration dd(String label) => InputDecoration(labelText: label);
     return Container(
-      padding: const EdgeInsets.all(16),
+      padding: const EdgeInsets.all(14),
       decoration: _panelDecoration(),
-      child: LayoutBuilder(
-        builder: (context, constraints) {
-          final compact = constraints.maxWidth < 1000;
-          final fields = [
-            SizedBox(
-              width: compact ? constraints.maxWidth : 300,
-              child: TextField(
+      child: Column(
+        children: [
+          Wrap(
+            spacing: 10,
+            runSpacing: 10,
+            crossAxisAlignment: WrapCrossAlignment.center,
+            children: [
+              SizedBox(width: 300, child: TextField(
                 controller: _searchController,
-                onSubmitted: (_) => setState(() => _page = 0),
+                onChanged: (_) => setState(() => _page = 0),
                 decoration: const InputDecoration(
-                  hintText: 'Müşteri adı, telefon, adres veya talep no...',
+                  hintText: 'Müşteri adı, soyadı veya telefon ara...',
                   prefixIcon: Icon(Icons.search),
                 ),
-              ),
-            ),
-            SizedBox(
-              width: compact ? (constraints.maxWidth - 12) / 2 : 180,
-              child: DropdownButtonFormField<ServiceRequestType?>(
+              )),
+              SizedBox(width: 175, child: DropdownButtonFormField<ServiceRequestType?>(
                 isExpanded: true,
                 initialValue: _selectedType,
-                decoration: const InputDecoration(labelText: 'Servis Türü'),
+                decoration: dd('Servis Türü'),
                 items: [
-                  const DropdownMenuItem<ServiceRequestType?>(
-                    value: null,
-                    child: Text('Tümü'),
-                  ),
-                  ...ServiceRequestType.values.map(
-                    (type) => DropdownMenuItem<ServiceRequestType?>(
-                      value: type,
-                      child: Text(type.label, overflow: TextOverflow.ellipsis),
-                    ),
-                  ),
+                  const DropdownMenuItem<ServiceRequestType?>(value: null, child: Text('Tümü')),
+                  ...ServiceRequestType.values.map((type) => DropdownMenuItem<ServiceRequestType?>(value: type, child: Text(type.label, overflow: TextOverflow.ellipsis))),
                 ],
-                onChanged: (value) => setState(() {
-                  _selectedType = value;
-                  _page = 0;
-                }),
-              ),
-            ),
-            if (widget.role != AppRole.technician)
-              SizedBox(
-                width: compact ? (constraints.maxWidth - 12) / 2 : 210,
-                child: DropdownButtonFormField<String?>(
+                onChanged: (value) => setState(() { _selectedType = value; _page = 0; }),
+              )),
+              if (widget.role != AppRole.technician)
+                SizedBox(width: 210, child: DropdownButtonFormField<String?>(
                   isExpanded: true,
                   initialValue: _selectedTechnicianId,
-                  decoration: const InputDecoration(labelText: 'Teknisyen'),
+                  decoration: dd('Teknisyen'),
                   items: [
-                    const DropdownMenuItem<String?>(
-                      value: null,
-                      child: Text('Tüm teknisyenler'),
-                    ),
-                    ..._technicians.map(
-                      (technician) => DropdownMenuItem<String?>(
-                        value: technician.id,
-                        child: Text(technician.fullName, overflow: TextOverflow.ellipsis),
-                      ),
-                    ),
+                    const DropdownMenuItem<String?>(value: null, child: Text('Tüm teknisyenler')),
+                    ..._technicians.map((t) => DropdownMenuItem<String?>(value: t.id, child: Text(t.fullName, overflow: TextOverflow.ellipsis))),
                   ],
-                  onChanged: (value) async {
-                    setState(() {
-                      _selectedTechnicianId = value;
-                      _page = 0;
-                    });
-                    await ref
-                        .read(serviceRequestControllerProvider)
-                        .loadServiceRequests(
-                          status: _selectedStatus,
-                          technicianId: value,
-                        );
-                  },
-                ),
-              ),
-            SizedBox(
-              width: compact ? constraints.maxWidth : 240,
-              child: OutlinedButton.icon(
+                  onChanged: (value) => setState(() { _selectedTechnicianId = value; _page = 0; }),
+                )),
+              SizedBox(width: 245, child: OutlinedButton.icon(
                 onPressed: _pickDateRange,
                 icon: const Icon(Icons.calendar_today_outlined, size: 18),
-                label: Align(
-                  alignment: Alignment.centerLeft,
-                  child: Text(
-                    _dateRange == null
-                        ? 'Tarih Aralığı'
-                        : '${_formatDate(_dateRange!.start)} - ${_formatDate(_dateRange!.end)}',
-                  ),
-                ),
-                style: OutlinedButton.styleFrom(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 14, vertical: 17),
-                  side: const BorderSide(color: Color(0xFFD9E2EC)),
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(10),
-                  ),
-                ),
+                label: Align(alignment: Alignment.centerLeft, child: Text(
+                  _dateRange == null ? 'Tarih Aralığı' : '${_formatDate(_dateRange!.start)} - ${_formatDate(_dateRange!.end)}',
+                  overflow: TextOverflow.ellipsis,
+                )),
+                style: OutlinedButton.styleFrom(padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 17)),
+              )),
+              FilledButton.icon(
+                onPressed: () => setState(() => _page = 0),
+                icon: const Icon(Icons.filter_alt_outlined), label: const Text('Filtrele'),
+                style: FilledButton.styleFrom(backgroundColor: const Color(0xFF0797A9), foregroundColor: Colors.white, padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 17)),
               ),
-            ),
-            FilledButton.icon(
-              onPressed: () => setState(() => _page = 0),
-              icon: const Icon(Icons.filter_alt_outlined),
-              label: const Text('Filtrele'),
-              style: FilledButton.styleFrom(
-                backgroundColor: const Color(0xFF08AFC0),
-                foregroundColor: Colors.white,
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 20, vertical: 17),
-              ),
-            ),
-            OutlinedButton.icon(
-              onPressed: _clearFilters,
-              icon: const Icon(Icons.restart_alt_rounded),
-              label: const Text('Temizle'),
-              style: OutlinedButton.styleFrom(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 20, vertical: 17),
-              ),
-            ),
-          ];
+              OutlinedButton.icon(onPressed: _clearFilters, icon: const Icon(Icons.restart_alt_rounded), label: const Text('Temizle'), style: OutlinedButton.styleFrom(padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 17))),
+            ],
+          ),
 
-          return Wrap(
-            spacing: 12,
-            runSpacing: 12,
-            crossAxisAlignment: WrapCrossAlignment.center,
-            children: fields,
-          );
-        },
+        ],
+      ),
+    );
+  }
+
+  Widget _buildLocationDistribution(List<ServiceRequestModel> requests) {
+    const preferred = ['İzmir', 'Aydın', 'Manisa', 'Muğla'];
+    final counts = <String, int>{};
+    for (final r in requests) {
+      final city = r.customerCity.trim();
+      if (city.isNotEmpty) counts[city] = (counts[city] ?? 0) + 1;
+    }
+    final cities = <String>[...preferred.where((c) => counts.containsKey(c))];
+    for (final c in counts.keys) { if (!cities.contains(c) && cities.length < 4) cities.add(c); }
+    if (cities.isEmpty) return const SizedBox.shrink();
+    return Container(
+      padding: const EdgeInsets.fromLTRB(14, 10, 14, 12),
+      decoration: _panelDecoration(),
+      child: Row(
+        children: [
+          const Text('Lokasyona Göre Dağılım', style: TextStyle(fontWeight: FontWeight.w800, color: Color(0xFF526277))),
+          const SizedBox(width: 16),
+          Expanded(child: Wrap(
+            spacing: 10,
+            runSpacing: 8,
+            children: cities.map((city) {
+              final selected = _selectedCity == city;
+              return InkWell(
+                onTap: () => setState(() { _selectedCity = selected ? null : city; _selectedDistrict = null; _page = 0; }),
+                borderRadius: BorderRadius.circular(10),
+                child: Container(
+                  width: 138,
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                  decoration: BoxDecoration(
+                    color: selected ? const Color(0xFFF0FBFC) : Colors.white,
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(color: selected ? const Color(0xFF78DDE5) : const Color(0xFFDDE5ED)),
+                  ),
+                  child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                    Text(city, style: const TextStyle(fontWeight: FontWeight.w800)),
+                    const SizedBox(height: 2),
+                    Text('${counts[city] ?? 0} iş', style: const TextStyle(color: Color(0xFF607086))),
+                  ]),
+                ),
+              );
+            }).toList(),
+          )),
+        ],
       ),
     );
   }
@@ -812,6 +810,175 @@ class _ServiceRequestListScreenState
     );
   }
 
+  String _productSummary(ServiceRequestModel request) {
+    final names = <String>[];
+    for (final item in request.items) {
+      final name = item.productName.trim();
+      if (name.isNotEmpty && !names.contains(name)) names.add(name);
+    }
+    if (names.isEmpty && request.plannedProductName.trim().isNotEmpty) {
+      names.add(request.plannedProductName.trim());
+    }
+    if (names.isEmpty) return 'Ürün belirtilmedi';
+    if (names.length <= 2) return names.join(' • ');
+    return '${names.take(2).join(' • ')} +${names.length - 2}';
+  }
+
+  String _creatorName(ServiceRequestModel request) {
+    final id = request.createdBy;
+    if (id == null || id.isEmpty) return '-';
+    for (final user in _users) {
+      if (user.id == id) return user.fullName.trim().isEmpty ? user.username : user.fullName;
+    }
+    return '-';
+  }
+
+  Widget _buildLocationColumnHeader() {
+    final active = _selectedCity != null || _selectedDistrict != null || _locationSortAscending != null;
+    return InkWell(
+      onTap: _showLocationColumnOptions,
+      borderRadius: BorderRadius.circular(8),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 8),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Text('İl / İlçe'),
+            const SizedBox(width: 5),
+            Icon(
+              active ? Icons.filter_alt_rounded : Icons.arrow_drop_down_rounded,
+              size: 19,
+              color: active ? const Color(0xFF0797A9) : const Color(0xFF69788B),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _showLocationColumnOptions() async {
+    final source = ref.read(serviceRequestControllerProvider).state.serviceRequests;
+    final cities = source
+        .map((r) => r.customerCity.trim())
+        .where((e) => e.isNotEmpty)
+        .toSet()
+        .toList()
+      ..sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
+
+    String? tempCity = _selectedCity;
+    String? tempDistrict = _selectedDistrict;
+    bool? tempSort = _locationSortAscending;
+
+    final apply = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (context, setLocalState) {
+          final districts = source
+              .where((r) => tempCity == null ||
+                  r.customerCity.trim().toLowerCase() == tempCity!.toLowerCase())
+              .map((r) => r.customerDistrict.trim())
+              .where((e) => e.isNotEmpty)
+              .toSet()
+              .toList()
+            ..sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
+          return AlertDialog(
+            titlePadding: const EdgeInsets.fromLTRB(20, 18, 12, 6),
+            contentPadding: const EdgeInsets.fromLTRB(20, 10, 20, 4),
+            actionsPadding: const EdgeInsets.fromLTRB(12, 6, 12, 12),
+            title: Row(
+              children: [
+                const Expanded(child: Text('İl / İlçe', style: TextStyle(fontWeight: FontWeight.w800))),
+                IconButton(onPressed: () => Navigator.pop(dialogContext, false), icon: const Icon(Icons.close)),
+              ],
+            ),
+            content: SizedBox(
+              width: 390,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text('Sırala', style: TextStyle(fontWeight: FontWeight.w700)),
+                  const SizedBox(height: 8),
+                  Row(
+                    children: [
+                      Expanded(child: OutlinedButton.icon(
+                        onPressed: () => setLocalState(() => tempSort = true),
+                        icon: Icon(Icons.arrow_downward_rounded, color: tempSort == true ? const Color(0xFF0797A9) : null),
+                        label: const Text('A → Z'),
+                        style: OutlinedButton.styleFrom(backgroundColor: tempSort == true ? const Color(0xFFE9F9FB) : null),
+                      )),
+                      const SizedBox(width: 8),
+                      Expanded(child: OutlinedButton.icon(
+                        onPressed: () => setLocalState(() => tempSort = false),
+                        icon: Icon(Icons.arrow_upward_rounded, color: tempSort == false ? const Color(0xFF0797A9) : null),
+                        label: const Text('Z → A'),
+                        style: OutlinedButton.styleFrom(backgroundColor: tempSort == false ? const Color(0xFFE9F9FB) : null),
+                      )),
+                    ],
+                  ),
+                  const SizedBox(height: 16),
+                  DropdownButtonFormField<String?>(
+                    isExpanded: true,
+                    value: tempCity,
+                    decoration: const InputDecoration(labelText: 'İl'),
+                    items: [
+                      const DropdownMenuItem<String?>(value: null, child: Text('Tüm İller')),
+                      ...cities.map((city) => DropdownMenuItem<String?>(value: city, child: Text(city))),
+                    ],
+                    onChanged: (value) => setLocalState(() {
+                      tempCity = value;
+                      tempDistrict = null;
+                    }),
+                  ),
+                  const SizedBox(height: 12),
+                  DropdownButtonFormField<String?>(
+                    isExpanded: true,
+                    value: tempDistrict,
+                    decoration: InputDecoration(
+                      labelText: 'İlçe',
+                      helperText: tempCity == null ? 'Önce il seçersen ilçeler o ile göre daralır.' : null,
+                    ),
+                    items: [
+                      const DropdownMenuItem<String?>(value: null, child: Text('Tüm İlçeler')),
+                      ...districts.map((district) => DropdownMenuItem<String?>(value: district, child: Text(district))),
+                    ],
+                    onChanged: (value) => setLocalState(() => tempDistrict = value),
+                  ),
+                ],
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () {
+                  setLocalState(() {
+                    tempCity = null;
+                    tempDistrict = null;
+                    tempSort = null;
+                  });
+                },
+                child: const Text('Temizle'),
+              ),
+              FilledButton(
+                onPressed: () => Navigator.pop(dialogContext, true),
+                style: FilledButton.styleFrom(backgroundColor: const Color(0xFF0797A9)),
+                child: const Text('Uygula'),
+              ),
+            ],
+          );
+        },
+      ),
+    );
+
+    if (apply == true && mounted) {
+      setState(() {
+        _selectedCity = tempCity;
+        _selectedDistrict = tempDistrict;
+        _locationSortAscending = tempSort;
+        _page = 0;
+      });
+    }
+  }
+
   Widget _buildDesktopTable(
     List<ServiceRequestModel> requests,
     ServiceRequestState state,
@@ -819,78 +986,52 @@ class _ServiceRequestListScreenState
     return SingleChildScrollView(
       scrollDirection: Axis.horizontal,
       child: ConstrainedBox(
-        constraints: const BoxConstraints(minWidth: 1050),
+        constraints: const BoxConstraints(minWidth: 1460),
         child: DataTable(
-          columnSpacing: 16,
-          horizontalMargin: 12,
+          showCheckboxColumn: false,
+          columnSpacing: 14,
+          horizontalMargin: 10,
           headingRowColor: WidgetStateProperty.all(const Color(0xFFF8FAFC)),
           dividerThickness: 1,
-          dataRowMinHeight: 74,
-          dataRowMaxHeight: 86,
-          headingTextStyle: const TextStyle(
-            fontWeight: FontWeight.w700,
-            color: Color(0xFF526277),
-          ),
-          columns: const [
-            DataColumn(label: Text('Seç')),
-            DataColumn(label: Text('Müşteri')),
-            DataColumn(label: Text('İl / İlçe')),
-            DataColumn(label: Text('Servis Türü')),
-            DataColumn(label: Text('Tarih / Saat')),
-            DataColumn(label: Text('Teknisyen')),
-            DataColumn(label: Text('Durum')),
-            DataColumn(label: Text('İşlemler')),
+          dataRowMinHeight: 64,
+          dataRowMaxHeight: 72,
+          headingTextStyle: const TextStyle(fontWeight: FontWeight.w700, color: Color(0xFF526277)),
+          columns: [
+            const DataColumn(label: Text('')),
+            const DataColumn(label: Text('Müşteri')),
+            DataColumn(label: _buildLocationColumnHeader()),
+            const DataColumn(label: Text('Servis Türü')),
+            const DataColumn(label: Text('Sekreter')),
+            const DataColumn(label: Text('Teknisyen')),
+            const DataColumn(label: Text('Durum')),
+            const DataColumn(label: Text('Oluşturma Tarihi')),
+            const DataColumn(label: Text('Atama Tarihi')),
+            const DataColumn(label: Text('İşlemler')),
           ],
-          rows: requests
-              .map(
-                (request) => DataRow(
-                  onSelectChanged: (_) => _showDetails(request),
-                  cells: [
-                    DataCell(Checkbox(
-                      value: request.id != null && _selectedRequestIds.contains(request.id),
-                      onChanged: request.id == null || !_canManageApproval || !_canBulkSelect(request) ? null : (v) => setState(() { if (v == true) { _selectedRequestIds.add(request.id!); } else { _selectedRequestIds.remove(request.id); } }),
-                    )),
-                    DataCell(SizedBox(width: 160, child: _TwoLineText(primary: request.customerName.trim().isEmpty ? 'Müşteri bilgisi yok' : request.customerName, secondary: request.customerPhone.trim().isEmpty ? '#${_shortId(request.id)}' : request.customerPhone))),
-                    DataCell(SizedBox(width: 140, child: _TwoLineText(primary: request.customerCity.trim().isEmpty ? '-' : request.customerCity, secondary: request.customerDistrict.trim().isEmpty ? '-' : request.customerDistrict))),
-                    DataCell(
-                      _TwoLineText(
-                        primary: request.serviceType.label,
-                        secondary: request.plannedProductName.trim().isEmpty
-                            ? request.description
-                            : request.plannedProductName,
-                      ),
-                    ),
-                    DataCell(
-                      _TwoLineText(
-                        primary: request.plannedDate == null
-                            ? '-'
-                            : _formatDate(request.plannedDate!),
-                        secondary: request.plannedDate == null
-                            ? 'Planlanmadı'
-                            : _formatTime(request.plannedDate!),
-                      ),
-                    ),
-                    DataCell(
-                      _TechnicianCell(
-                        name: request.status == ServiceRequestStatus.pending
-                            ? ''
-                            : request.assignedTechnicianName,
-                      ),
-                    ),
-                    DataCell(_StatusBadge(status: request.status)),
-                    DataCell(
-                      SizedBox(
-                        width: 210,
-                        child: Align(
-                          alignment: Alignment.centerRight,
-                          child: _buildRowActions(request, state.isSaving),
-                        ),
-                      ),
-                    ),
-                  ],
+          rows: requests.map((request) => DataRow(
+            onSelectChanged: (_) => _showDetails(request),
+            cells: [
+              DataCell(Checkbox(
+                value: request.id != null && _selectedRequestIds.contains(request.id),
+                onChanged: request.id == null || !_canManageApproval || !_canBulkSelect(request) ? null : (v) => setState(() { if (v == true) { _selectedRequestIds.add(request.id!); } else { _selectedRequestIds.remove(request.id); } }),
+              )),
+              DataCell(SizedBox(width: 185, child: _TwoLineText(primary: request.customerName.trim().isEmpty ? 'Müşteri bilgisi yok' : request.customerName, secondary: request.customerPhone.trim().isEmpty ? '#${_shortId(request.id)}' : request.customerPhone))),
+              DataCell(SizedBox(width: 150, child: _TwoLineText(primary: request.customerCity.trim().isEmpty ? '-' : request.customerCity, secondary: request.customerDistrict.trim().isEmpty ? '-' : request.customerDistrict))),
+              DataCell(SizedBox(
+                width: 155,
+                child: _TwoLineText(
+                  primary: request.serviceType.label,
+                  secondary: _productSummary(request),
                 ),
-              )
-              .toList(),
+              )),
+              DataCell(SizedBox(width: 135, child: Text(_creatorName(request), overflow: TextOverflow.ellipsis, style: const TextStyle(fontWeight: FontWeight.w600)))),
+              DataCell(SizedBox(width: 165, child: _TechnicianCell(name: request.status == ServiceRequestStatus.pending ? '' : request.assignedTechnicianName))),
+              DataCell(_StatusBadge(status: request.status)),
+              DataCell(Text(request.createdAt == null ? '-' : _formatDate(request.createdAt!.toLocal()))),
+              DataCell(Text(request.plannedDate == null ? '-' : _formatDate(request.plannedDate!.toLocal()))),
+              DataCell(SizedBox(width: 180, child: Align(alignment: Alignment.centerRight, child: _buildRowActions(request, state.isSaving)))),
+            ],
+          )).toList(),
         ),
       ),
     );
@@ -1136,7 +1277,7 @@ class _ServiceRequestListScreenState
             icon: const Icon(Icons.chevron_right),
           ),
           const SizedBox(width: 16),
-          const Text('10 / sayfa'),
+          const Text('20 / sayfa'),
         ],
       ),
     );
@@ -1164,24 +1305,20 @@ class _ServiceRequestListScreenState
       _selectedStatus = null;
       _selectedType = null;
       _selectedTechnicianId = null;
+      _selectedCity = null;
+      _selectedDistrict = null;
+      _locationSortAscending = null;
       _dateRange = null;
       _page = 0;
     });
-    await ref
-        .read(serviceRequestControllerProvider)
-        .loadServiceRequests(status: null, technicianId: null);
+    await ref.read(serviceRequestControllerProvider).loadServiceRequests();
   }
 
   Future<void> _changeStatus(ServiceRequestStatus? status) async {
     setState(() {
       _selectedStatus = status;
-      _dateRange = null;
       _page = 0;
     });
-    await ref.read(serviceRequestControllerProvider).loadServiceRequests(
-          status: status,
-          technicianId: _selectedTechnicianId,
-        );
   }
 
   void _showDetails(ServiceRequestModel request) {
@@ -2051,8 +2188,7 @@ class _TechnicianCell extends StatelessWidget {
           ),
         ),
         const SizedBox(width: 8),
-        SizedBox(
-          width: 115,
+        Expanded(
           child: Text(
             name,
             maxLines: 2,

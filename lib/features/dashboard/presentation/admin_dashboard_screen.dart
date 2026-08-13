@@ -7,8 +7,10 @@ import 'package:intl/intl.dart';
 
 import '../../../core/auth/app_role.dart';
 import '../../../core/widgets/management_shell.dart';
+import '../../finance/data/finance_providers.dart';
 import '../../operations/data/operations_providers.dart';
-import '../../settings/data/company_app_settings.dart';
+
+enum _DashboardPeriod { day, week, month }
 
 class AdminDashboardScreen extends ConsumerStatefulWidget {
   const AdminDashboardScreen({super.key});
@@ -19,15 +21,16 @@ class AdminDashboardScreen extends ConsumerStatefulWidget {
 }
 
 class _AdminDashboardScreenState extends ConsumerState<AdminDashboardScreen> {
-  late Future<Map<String, dynamic>> _future;
-  Timer? _liveTimer;
+  late Future<_DashboardBundle> _future;
   DateTime _selectedDate = DateTime.now();
+  _DashboardPeriod _period = _DashboardPeriod.day;
+  Timer? _liveTimer;
 
   @override
   void initState() {
     super.initState();
     _future = _load();
-    _liveTimer = Timer.periodic(const Duration(minutes: 1), (_) {
+    _liveTimer = Timer.periodic(const Duration(minutes: 2), (_) {
       if (mounted) _refresh();
     });
   }
@@ -38,340 +41,809 @@ class _AdminDashboardScreenState extends ConsumerState<AdminDashboardScreen> {
     super.dispose();
   }
 
-  Future<Map<String, dynamic>> _load() {
-    return ref.read(operationsRepositoryProvider).dashboardWorkspace(selectedDate: _selectedDate);
+  DateTime get _rangeStart {
+    final d = DateTime(_selectedDate.year, _selectedDate.month, _selectedDate.day);
+    switch (_period) {
+      case _DashboardPeriod.day:
+        return d;
+      case _DashboardPeriod.week:
+        return d.subtract(Duration(days: d.weekday - DateTime.monday));
+      case _DashboardPeriod.month:
+        return DateTime(d.year, d.month, 1);
+    }
+  }
+
+  DateTime get _rangeEnd {
+    final start = _rangeStart;
+    switch (_period) {
+      case _DashboardPeriod.day:
+        return start.add(const Duration(days: 1));
+      case _DashboardPeriod.week:
+        return start.add(const Duration(days: 7));
+      case _DashboardPeriod.month:
+        return DateTime(start.year, start.month + 1, 1);
+    }
+  }
+
+  Future<_DashboardBundle> _load() async {
+    final start = _rangeStart;
+    final end = _rangeEnd;
+
+    final results = await Future.wait<dynamic>([
+      _safeWorkspace(),
+      _safeDetails(start, end),
+      _safePayments(start, end),
+      _safeServiceRows(start, end, dateField: 'planned_date'),
+      _safeServiceRows(start, end, dateField: 'created_at'),
+    ]);
+
+    return _DashboardBundle(
+      workspace: results[0] as Map<String, dynamic>,
+      details: results[1] as List<Map<String, dynamic>>,
+      payments: results[2] as List<Map<String, dynamic>>,
+      plannedServices: results[3] as List<Map<String, dynamic>>,
+      createdServices: results[4] as List<Map<String, dynamic>>,
+      rangeStart: start,
+      rangeEnd: end,
+    );
+  }
+
+  Future<Map<String, dynamic>> _safeWorkspace() async {
+    try {
+      return await ref
+          .read(operationsRepositoryProvider)
+          .dashboardWorkspace(selectedDate: _selectedDate)
+          .timeout(const Duration(seconds: 15));
+    } catch (_) {
+      return const <String, dynamic>{};
+    }
+  }
+
+  Future<List<Map<String, dynamic>>> _safeDetails(
+    DateTime start,
+    DateTime end,
+  ) async {
+    try {
+      return await ref
+          .read(financeRepositoryProvider)
+          .reportDetails(start: start, end: end)
+          .timeout(const Duration(seconds: 15));
+    } catch (_) {
+      return const <Map<String, dynamic>>[];
+    }
+  }
+
+  Future<List<Map<String, dynamic>>> _safePayments(
+    DateTime start,
+    DateTime end,
+  ) async {
+    try {
+      return await ref
+          .read(financeRepositoryProvider)
+          .payments(start: start, end: end)
+          .timeout(const Duration(seconds: 15));
+    } catch (_) {
+      return const <Map<String, dynamic>>[];
+    }
+  }
+
+  Future<List<Map<String, dynamic>>> _safeServiceRows(
+    DateTime start,
+    DateTime end, {
+    required String dateField,
+  }) async {
+    try {
+      final client = ref.read(operationsRepositoryProvider).client;
+      final raw = List<Map<String, dynamic>>.from(
+        await client
+            .from('service_requests')
+            .select(
+              'id, assigned_technician_id, created_by, service_type, status, '
+              'price, planned_date, created_at',
+            )
+            .gte(dateField, start.toUtc().toIso8601String())
+            .lt(dateField, end.toUtc().toIso8601String())
+            .order(dateField, ascending: true)
+            .limit(1000),
+      );
+
+      final profileIds = <String>{};
+      for (final row in raw) {
+        final technician = row['assigned_technician_id']?.toString() ?? '';
+        final creator = row['created_by']?.toString() ?? '';
+        if (technician.isNotEmpty) profileIds.add(technician);
+        if (creator.isNotEmpty) profileIds.add(creator);
+      }
+
+      final profiles = <String, Map<String, dynamic>>{};
+      if (profileIds.isNotEmpty) {
+        final profileRows = List<Map<String, dynamic>>.from(
+          await client
+              .from('profiles')
+              .select('id, full_name, role')
+              .inFilter('id', profileIds.toList()),
+        );
+        for (final profile in profileRows) {
+          profiles[profile['id'].toString()] = profile;
+        }
+      }
+
+      return raw.map((row) {
+        final technicianId = row['assigned_technician_id']?.toString() ?? '';
+        final creatorId = row['created_by']?.toString() ?? '';
+        final technician = profiles[technicianId] ?? const <String, dynamic>{};
+        final creator = profiles[creatorId] ?? const <String, dynamic>{};
+        return <String, dynamic>{
+          ...row,
+          'technician_name': technician['full_name']?.toString() ?? '',
+          'creator_name': creator['full_name']?.toString() ?? '',
+          'creator_role': creator['role']?.toString() ?? '',
+        };
+      }).toList(growable: false);
+    } catch (_) {
+      return const <Map<String, dynamic>>[];
+    }
   }
 
   void _refresh() {
     if (!mounted) return;
+    setState(() => _future = _load());
+  }
+
+  void _setDate(DateTime date, {_DashboardPeriod? period}) {
     setState(() {
+      _selectedDate = DateTime(date.year, date.month, date.day);
+      if (period != null) _period = period;
       _future = _load();
     });
   }
 
+  void _movePeriod(int direction) {
+    final next = switch (_period) {
+      _DashboardPeriod.day =>
+        _selectedDate.add(Duration(days: direction)),
+      _DashboardPeriod.week =>
+        _selectedDate.add(Duration(days: 7 * direction)),
+      _DashboardPeriod.month =>
+        DateTime(_selectedDate.year, _selectedDate.month + direction, 1),
+    };
+    _setDate(next);
+  }
+
+  Future<void> _pickDate() async {
+    final picked = await showDatePicker(
+      context: context,
+      initialDate: _selectedDate,
+      firstDate: DateTime(2020),
+      lastDate: DateTime(2035),
+    );
+    if (picked != null && mounted) {
+      _setDate(picked, period: _DashboardPeriod.day);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
-    final appSettings = ref.watch(companyAppSettingsProvider).asData?.value ??
-        const CompanyAppSettings(companyId: '');
-
     return ManagementShell(
       role: AppRole.admin,
       title: 'Ana Panel',
-      subtitle: 'Canlı operasyon ve finans özeti • Her dakika yenilenir',
-      dark: true,
+      subtitle: 'Canlı operasyon ve finans özeti',
       actions: [
-        IconButton.filledTonal(tooltip: 'Önceki gün', onPressed: () { setState(() { _selectedDate = _selectedDate.subtract(const Duration(days: 1)); _future = _load(); }); }, icon: const Icon(Icons.chevron_left)),
+        IconButton.filledTonal(
+          tooltip: 'Önceki dönem',
+          onPressed: () => _movePeriod(-1),
+          icon: const Icon(Icons.chevron_left_rounded),
+        ),
         OutlinedButton.icon(
-          onPressed: () async { final d = await showDatePicker(context: context, initialDate: _selectedDate, firstDate: DateTime(2024), lastDate: DateTime(2035)); if (d != null && mounted) setState(() { _selectedDate = d; _future = _load(); }); },
+          onPressed: _pickDate,
           icon: const Icon(Icons.calendar_today_rounded, size: 17),
           label: Text(DateFormat('dd.MM.yyyy').format(_selectedDate)),
         ),
-        IconButton.filledTonal(tooltip: 'Sonraki gün', onPressed: () { setState(() { _selectedDate = _selectedDate.add(const Duration(days: 1)); _future = _load(); }); }, icon: const Icon(Icons.chevron_right)),
-        TextButton(onPressed: () { setState(() { _selectedDate = DateTime.now(); _future = _load(); }); }, child: const Text('Bugün')),
-        const SizedBox(width: 8),
         IconButton.filledTonal(
-          tooltip: 'Yenile',
-          onPressed: _refresh,
-          icon: const Icon(Icons.refresh_rounded),
+          tooltip: 'Sonraki dönem',
+          onPressed: () => _movePeriod(1),
+          icon: const Icon(Icons.chevron_right_rounded),
+        ),
+        _PeriodButton(
+          label: 'Bugün',
+          selected: _period == _DashboardPeriod.day && _isToday(_selectedDate),
+          onTap: () => _setDate(DateTime.now(), period: _DashboardPeriod.day),
+        ),
+        _PeriodButton(
+          label: 'Dün',
+          selected: _period == _DashboardPeriod.day &&
+              _isSameDay(
+                _selectedDate,
+                DateTime.now().subtract(const Duration(days: 1)),
+              ),
+          onTap: () => _setDate(
+            DateTime.now().subtract(const Duration(days: 1)),
+            period: _DashboardPeriod.day,
+          ),
+        ),
+        _PeriodButton(
+          label: 'Bu Hafta',
+          selected: _period == _DashboardPeriod.week,
+          onTap: () => _setDate(DateTime.now(), period: _DashboardPeriod.week),
+        ),
+        _PeriodButton(
+          label: 'Bu Ay',
+          selected: _period == _DashboardPeriod.month,
+          onTap: () => _setDate(DateTime.now(), period: _DashboardPeriod.month),
+        ),
+        IconButton(
+          tooltip: 'Tarih seç',
+          onPressed: _pickDate,
+          icon: const Icon(Icons.calendar_month_outlined),
         ),
       ],
-      child: Stack(
-        children: [
-          FutureBuilder<Map<String, dynamic>>(
-            future: _future,
-            builder: (context, snapshot) {
-              final data = snapshot.data ?? const <String, dynamic>{};
-              return RefreshIndicator(
-                onRefresh: () async => _refresh(),
-                child: CustomScrollView(
-                  slivers: [
-                    SliverPadding(
-                      padding: const EdgeInsets.fromLTRB(22, 18, 22, 92),
-                      sliver: SliverList(
-                        delegate: SliverChildListDelegate([
-                          if (appSettings.panelVisible('admin', 'summary')) ...[
-                            _SummaryGrid(data: data, loading: !snapshot.hasData),
-                            const SizedBox(height: 16),
-                          ],
-                          if (_maps(data['could_not_complete_today']).isNotEmpty) ...[
-                            _CouldNotCompletePanel(
-                              rows: _maps(data['could_not_complete_today']),
-                              onOpenAll: () => context.go('/manager/service-requests/pending'),
-                            ),
-                            const SizedBox(height: 16),
-                          ],
-                          if (appSettings.panelVisible('admin', 'recent_services')) ...[
-                            _RecentServices(
-                              rows: _maps(data['recent_services']),
-                            ),
-                            const SizedBox(height: 16),
-                          ],
-                          LayoutBuilder(
-                            builder: (context, constraints) {
-                              final panels = <Widget>[
-                                if (appSettings.panelVisible('admin', 'today_schedule'))
-                                  _TodaySchedule(rows: _maps(data['today_jobs'])),
-                                if (appSettings.panelVisible('admin', 'recent_payments'))
-                                  _RecentPayments(rows: _maps(data['recent_payments'])),
-                                if (appSettings.panelVisible(
-                                  'admin',
-                                  'announcements',
-                                  fallback: false,
-                                ))
-                                  const _Announcements(),
-                              ];
-                              if (panels.isEmpty) return const SizedBox.shrink();
-                              if (constraints.maxWidth < 980 || panels.length == 1) {
-                                return Column(
-                                  children: [
-                                    for (var i = 0; i < panels.length; i++) ...[
-                                      panels[i],
-                                      if (i != panels.length - 1)
-                                        const SizedBox(height: 16),
-                                    ],
-                                  ],
-                                );
-                              }
-                              return Row(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  for (var i = 0; i < panels.length; i++) ...[
-                                    Expanded(child: panels[i]),
-                                    if (i != panels.length - 1)
-                                      const SizedBox(width: 16),
-                                  ],
-                                ],
-                              );
-                            },
-                          ),
-                        ]),
-                      ),
-                    ),
-                  ],
+      child: FutureBuilder<_DashboardBundle>(
+        future: _future,
+        builder: (context, snapshot) {
+          final bundle = snapshot.data ?? _DashboardBundle.empty(
+            rangeStart: _rangeStart,
+            rangeEnd: _rangeEnd,
+          );
+          return RefreshIndicator(
+            onRefresh: () async => _refresh(),
+            child: ListView(
+              physics: const AlwaysScrollableScrollPhysics(),
+              padding: const EdgeInsets.fromLTRB(18, 16, 18, 26),
+              children: [
+                _SummaryCards(
+                  bundle: bundle,
+                  loading: snapshot.connectionState == ConnectionState.waiting,
                 ),
-              );
-            },
-          ),
-          Positioned(
-            right: 22,
-            bottom: 22,
-            child: FloatingActionButton.extended(
-              onPressed: () => context.go('/manager/service-requests/pending'),
-              backgroundColor: const Color(0xFF08C6D1),
-              foregroundColor: const Color(0xFF071521),
-              icon: const Icon(Icons.add_task_rounded),
-              label: const Text(
-                'Yeni İş',
-                style: TextStyle(fontWeight: FontWeight.w800),
-              ),
+                const SizedBox(height: 14),
+                LayoutBuilder(
+                  builder: (context, constraints) {
+                    final technician = _StaffPerformancePanel(
+                      title: 'Bugünkü Tekniker Performansı',
+                      staff: bundle.technicianPerformance,
+                      staffLabel: 'Tekniker',
+                      countLabel: 'Toplam İş',
+                      onOpenAll: () => context.go('/manager/reports'),
+                      onOpenRow: (_) => context.go('/manager/service-planning'),
+                    );
+                    final secretary = _StaffPerformancePanel(
+                      title: 'Bugünkü Sekreter Performansı',
+                      staff: bundle.secretaryPerformance,
+                      staffLabel: 'Sekreter',
+                      countLabel: 'Alınan İş',
+                      onOpenAll: () => context.go('/manager/reports'),
+                      onOpenRow: (_) => context.go('/manager/reports'),
+                    );
+                    final program = _DailyProgramPanel(
+                      rows: bundle.technicianPerformance,
+                    );
+
+                    if (constraints.maxWidth >= 1120) {
+                      return Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Expanded(child: technician),
+                          const SizedBox(width: 12),
+                          Expanded(child: secretary),
+                          const SizedBox(width: 12),
+                          Expanded(child: program),
+                        ],
+                      );
+                    }
+                    return Column(
+                      children: [
+                        technician,
+                        const SizedBox(height: 12),
+                        secretary,
+                        const SizedBox(height: 12),
+                        program,
+                      ],
+                    );
+                  },
+                ),
+                const SizedBox(height: 14),
+                LayoutBuilder(
+                  builder: (context, constraints) {
+                    final payments = _PaymentsPanel(rows: bundle.payments);
+                    final quick = const _QuickAccessPanel();
+                    if (constraints.maxWidth >= 900) {
+                      return Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Expanded(flex: 5, child: payments),
+                          const SizedBox(width: 12),
+                          Expanded(flex: 6, child: quick),
+                        ],
+                      );
+                    }
+                    return Column(
+                      children: [
+                        payments,
+                        const SizedBox(height: 12),
+                        quick,
+                      ],
+                    );
+                  },
+                ),
+              ],
             ),
-          ),
-        ],
+          );
+        },
       ),
     );
   }
 
-  List<Map<String, dynamic>> _maps(Object? value) {
-    if (value is! List) return const [];
-    return value.whereType<Map>().map(Map<String, dynamic>.from).toList();
-  }
+  bool _isToday(DateTime value) => _isSameDay(value, DateTime.now());
+
+  bool _isSameDay(DateTime a, DateTime b) =>
+      a.year == b.year && a.month == b.month && a.day == b.day;
 }
 
-class _CouldNotCompletePanel extends StatelessWidget {
-  const _CouldNotCompletePanel({required this.rows, required this.onOpenAll});
+class _PeriodButton extends StatelessWidget {
+  const _PeriodButton({
+    required this.label,
+    required this.selected,
+    required this.onTap,
+  });
 
-  final List<Map<String, dynamic>> rows;
-  final VoidCallback onOpenAll;
+  final String label;
+  final bool selected;
+  final VoidCallback onTap;
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: const Color(0xFF0D2232),
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: const Color(0xFFEA7C24).withValues(alpha: .45)),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              const Icon(Icons.warning_amber_rounded, color: Color(0xFFFFA65B)),
-              const SizedBox(width: 8),
-              Text('Bugün Tamamlanamayan İşler (${rows.length})',
-                  style: const TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w900)),
-              const Spacer(),
-              TextButton(onPressed: onOpenAll, child: const Text('Servis Taleplerine Git')),
-            ],
-          ),
-          const SizedBox(height: 8),
-          for (final row in rows.take(5))
-            ListTile(
-              dense: true,
-              contentPadding: EdgeInsets.zero,
-              leading: const CircleAvatar(
-                backgroundColor: Color(0x3324EA7C),
-                child: Icon(Icons.close_rounded, color: Color(0xFFFFA65B)),
-              ),
-              title: Text(row['customer_name']?.toString() ?? 'Müşteri',
-                  style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w800)),
-              subtitle: Text(row['completion_note']?.toString().trim().isNotEmpty == true
-                  ? row['completion_note'].toString()
-                  : 'Tekniker işi tamamlayamadı.',
-                style: const TextStyle(color: Color(0xFFA7B7C5))),
-              trailing: const Chip(label: Text('Yeniden değerlendir')),
-            ),
-        ],
-      ),
+    return Padding(
+      padding: const EdgeInsets.only(left: 5),
+      child: selected
+          ? FilledButton.tonal(onPressed: onTap, child: Text(label))
+          : TextButton(onPressed: onTap, child: Text(label)),
     );
   }
 }
 
-class _SummaryGrid extends StatelessWidget {
-  const _SummaryGrid({required this.data, required this.loading});
+class _DashboardBundle {
+  const _DashboardBundle({
+    required this.workspace,
+    required this.details,
+    required this.payments,
+    required this.plannedServices,
+    required this.createdServices,
+    required this.rangeStart,
+    required this.rangeEnd,
+  });
 
-  final Map<String, dynamic> data;
+  factory _DashboardBundle.empty({
+    required DateTime rangeStart,
+    required DateTime rangeEnd,
+  }) {
+    return _DashboardBundle(
+      workspace: const <String, dynamic>{},
+      details: const <Map<String, dynamic>>[],
+      payments: const <Map<String, dynamic>>[],
+      plannedServices: const <Map<String, dynamic>>[],
+      createdServices: const <Map<String, dynamic>>[],
+      rangeStart: rangeStart,
+      rangeEnd: rangeEnd,
+    );
+  }
+
+  final Map<String, dynamic> workspace;
+  final List<Map<String, dynamic>> details;
+  final List<Map<String, dynamic>> payments;
+  final List<Map<String, dynamic>> plannedServices;
+  final List<Map<String, dynamic>> createdServices;
+  final DateTime rangeStart;
+  final DateTime rangeEnd;
+
+  int get activeCustomers => _int(workspace['active_customers']);
+  int get activeServices => _int(workspace['assigned']) + _int(workspace['pending']);
+
+  int get jobCount => plannedServices.where((row) {
+        final status = row['status']?.toString() ?? '';
+        return !_isCancelled(status);
+      }).length;
+
+  double get revenue => details.fold<double>(
+        0,
+        (sum, row) => sum + _double(row['amount']),
+      );
+
+  double get collection => payments.fold<double>(
+        0,
+        (sum, row) => sum + _double(row['amount']),
+      );
+
+  List<_StaffRow> get technicianPerformance {
+    final grouped = <String, _MutableStaff>{};
+    for (final service in plannedServices) {
+      final status = service['status']?.toString() ?? '';
+      if (_isCancelled(status)) continue;
+      final name = service['technician_name']?.toString().trim() ?? '';
+      if (name.isEmpty) continue;
+      final item = grouped.putIfAbsent(name, () => _MutableStaff(name));
+      item.total += 1;
+      if (status == 'completed') {
+        item.completed += 1;
+      } else {
+        item.pending += 1;
+      }
+    }
+    for (final row in details) {
+      final name = row['technician_name']?.toString().trim() ?? '';
+      if (name.isEmpty || name.toLowerCase().contains('belirtilmedi')) continue;
+      final item = grouped.putIfAbsent(name, () => _MutableStaff(name));
+      item.turnover += _double(row['amount']);
+    }
+    final result = grouped.values.map((item) => item.freeze()).toList();
+    result.sort((a, b) {
+      final byTotal = b.total.compareTo(a.total);
+      return byTotal != 0 ? byTotal : b.turnover.compareTo(a.turnover);
+    });
+    return result;
+  }
+
+  List<_StaffRow> get secretaryPerformance {
+    final grouped = <String, _MutableStaff>{};
+    for (final service in createdServices) {
+      if (service['creator_role']?.toString() != 'secretary') continue;
+      final name = service['creator_name']?.toString().trim() ?? '';
+      if (name.isEmpty) continue;
+      final item = grouped.putIfAbsent(name, () => _MutableStaff(name));
+      item.total += 1;
+      if (service['status']?.toString() == 'completed') {
+        item.completed += 1;
+      } else {
+        item.pending += 1;
+      }
+    }
+    for (final row in details) {
+      final name = row['secretary_name']?.toString().trim() ?? '';
+      if (name.isEmpty || name.toLowerCase().contains('belirtilmedi')) continue;
+      final item = grouped.putIfAbsent(name, () => _MutableStaff(name));
+      item.turnover += _double(row['amount']);
+    }
+    final result = grouped.values.map((item) => item.freeze()).toList();
+    result.sort((a, b) {
+      final byTotal = b.total.compareTo(a.total);
+      return byTotal != 0 ? byTotal : b.turnover.compareTo(a.turnover);
+    });
+    return result;
+  }
+
+  static bool _isCancelled(String status) =>
+      status == 'cancelled' ||
+      status == 'canceled' ||
+      status == 'could_not_complete' ||
+      status == 'deferred';
+
+  static int _int(Object? value) {
+    if (value is int) return value;
+    if (value is num) return value.toInt();
+    return int.tryParse(value?.toString() ?? '') ?? 0;
+  }
+
+  static double _double(Object? value) {
+    if (value is num) return value.toDouble();
+    return double.tryParse(value?.toString() ?? '') ?? 0;
+  }
+}
+
+class _MutableStaff {
+  _MutableStaff(this.name);
+
+  final String name;
+  int total = 0;
+  int completed = 0;
+  int pending = 0;
+  double turnover = 0;
+
+  _StaffRow freeze() => _StaffRow(
+        name: name,
+        total: total,
+        completed: completed,
+        pending: pending,
+        turnover: turnover,
+      );
+}
+
+class _StaffRow {
+  const _StaffRow({
+    required this.name,
+    required this.total,
+    required this.completed,
+    required this.pending,
+    required this.turnover,
+  });
+
+  final String name;
+  final int total;
+  final int completed;
+  final int pending;
+  final double turnover;
+}
+
+class _SummaryCards extends StatelessWidget {
+  const _SummaryCards({required this.bundle, required this.loading});
+
+  final _DashboardBundle bundle;
   final bool loading;
 
   @override
   Widget build(BuildContext context) {
-    final money = NumberFormat.currency(locale: 'tr_TR', symbol: '₺');
-    final cards = [
-      _MetricData(
-        'Toplam Müşteri',
-        loading ? '…' : '${data['active_customers'] ?? 0}',
-        Icons.groups_2_rounded,
-        const [Color(0xFF275EC9), Color(0xFF224DAA)],
+    final money = NumberFormat.currency(
+      locale: 'tr_TR',
+      symbol: '₺',
+      decimalDigits: 2,
+    );
+    final cards = <_SummaryData>[
+      _SummaryData(
+        title: 'Toplam Müşteri',
+        value: loading ? '…' : NumberFormat.decimalPattern('tr_TR').format(bundle.activeCustomers),
+        subtitle: 'Sistemdeki toplam aktif müşteri',
+        link: 'Tüm Müşteriler',
+        icon: Icons.groups_2_outlined,
+        color: const Color(0xFF2879F5),
+        onTap: () => context.go('/manager/customers'),
       ),
-      _MetricData(
-        'Aktif Servis',
-        loading ? '…' : '${data['assigned'] ?? 0}',
-        Icons.home_repair_service_rounded,
-        const [Color(0xFF7544C3), Color(0xFF5E35A1)],
+      _SummaryData(
+        title: 'Aktif Servis',
+        value: loading ? '…' : '${bundle.activeServices}',
+        subtitle: 'Devam eden servis talebi',
+        link: 'Aktif Servisler',
+        icon: Icons.business_center_outlined,
+        color: const Color(0xFF7559E8),
+        onTap: () => context.go('/manager/service-requests'),
       ),
-      _MetricData(
-        'Bugünkü İşler',
-        loading ? '…' : '${data['today_jobs_count'] ?? 0}',
-        Icons.today_rounded,
-        const [Color(0xFF18895E), Color(0xFF08704B)],
+      _SummaryData(
+        title: 'Bugünkü İş',
+        value: loading ? '…' : '${bundle.jobCount}',
+        subtitle: 'Teknikerlerin seçili dönemdeki işi',
+        link: 'Günlük İş Programı',
+        icon: Icons.event_available_outlined,
+        color: const Color(0xFF37B766),
+        onTap: () => context.go('/manager/service-planning'),
       ),
-      _MetricData(
-        'Bugünkü Ciro',
-        loading ? '…' : money.format(data['daily_revenue'] ?? 0),
-        Icons.trending_up_rounded,
-        const [Color(0xFFE27619), Color(0xFFC85C11)],
+      _SummaryData(
+        title: 'Bugünkü Ciro',
+        value: loading ? '…' : money.format(bundle.revenue),
+        subtitle: 'Seçili dönemde oluşan ciro',
+        link: 'Ciro Raporu',
+        icon: Icons.currency_lira_rounded,
+        color: const Color(0xFFF19A39),
+        onTap: () => context.go('/manager/reports'),
       ),
-      _MetricData(
-        'Yaklaşan Bakım',
-        loading ? '…' : '${data['upcoming_maintenance'] ?? 0}',
-        Icons.event_repeat_rounded,
-        const [Color(0xFFD74555), Color(0xFFB82F41)],
+      _SummaryData(
+        title: 'Bugünkü Tahsilat',
+        value: loading ? '…' : money.format(bundle.collection),
+        subtitle: 'Tahsil edilen toplam tutar',
+        link: 'Tahsilat Raporu',
+        icon: Icons.account_balance_wallet_outlined,
+        color: const Color(0xFF15B8BE),
+        onTap: () => context.go('/manager/payments'),
       ),
     ];
 
     return LayoutBuilder(
       builder: (context, constraints) {
-        final count = constraints.maxWidth >= 1240
+        final count = constraints.maxWidth >= 1120
             ? 5
-            : constraints.maxWidth >= 850
+            : constraints.maxWidth >= 760
                 ? 3
-                : constraints.maxWidth >= 560
+                : constraints.maxWidth >= 500
                     ? 2
                     : 1;
         return GridView.builder(
+          itemCount: cards.length,
           shrinkWrap: true,
           physics: const NeverScrollableScrollPhysics(),
-          itemCount: cards.length,
           gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
             crossAxisCount: count,
             crossAxisSpacing: 12,
             mainAxisSpacing: 12,
-            childAspectRatio: count == 1 ? 2.7 : 1.72,
+            childAspectRatio: count == 1 ? 2.5 : 1.65,
           ),
-          itemBuilder: (context, index) => _MetricCard(data: cards[index]),
+          itemBuilder: (context, index) => _SummaryCard(data: cards[index]),
         );
       },
     );
   }
 }
 
-class _MetricCard extends StatelessWidget {
-  const _MetricCard({required this.data});
+class _SummaryData {
+  const _SummaryData({
+    required this.title,
+    required this.value,
+    required this.subtitle,
+    required this.link,
+    required this.icon,
+    required this.color,
+    required this.onTap,
+  });
 
-  final _MetricData data;
+  final String title;
+  final String value;
+  final String subtitle;
+  final String link;
+  final IconData icon;
+  final Color color;
+  final VoidCallback onTap;
+}
+
+class _SummaryCard extends StatelessWidget {
+  const _SummaryCard({required this.data});
+
+  final _SummaryData data;
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      decoration: BoxDecoration(
-        gradient: LinearGradient(
-          colors: data.colors,
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-        ),
-        borderRadius: BorderRadius.circular(16),
-        boxShadow: [
-          BoxShadow(
-            color: data.colors.last.withValues(alpha: .28),
-            blurRadius: 20,
-            offset: const Offset(0, 8),
+    return Material(
+      color: Colors.white,
+      borderRadius: BorderRadius.circular(14),
+      child: InkWell(
+        onTap: data.onTap,
+        borderRadius: BorderRadius.circular(14),
+        child: Container(
+          padding: const EdgeInsets.all(16),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(14),
+            border: Border.all(color: const Color(0xFFE1E8F0)),
           ),
-        ],
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Container(
+                    width: 46,
+                    height: 46,
+                    decoration: BoxDecoration(
+                      color: data.color.withValues(alpha: .11),
+                      shape: BoxShape.circle,
+                    ),
+                    child: Icon(data.icon, color: data.color, size: 24),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          data.title,
+                          style: const TextStyle(
+                            color: Color(0xFF586A7E),
+                            fontWeight: FontWeight.w700,
+                            fontSize: 12,
+                          ),
+                        ),
+                        const SizedBox(height: 4),
+                        FittedBox(
+                          fit: BoxFit.scaleDown,
+                          alignment: Alignment.centerLeft,
+                          child: Text(
+                            data.value,
+                            style: const TextStyle(
+                              color: Color(0xFF071D34),
+                              fontSize: 23,
+                              fontWeight: FontWeight.w900,
+                            ),
+                          ),
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          data.subtitle,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                            color: Color(0xFF718197),
+                            fontSize: 11,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+              const Spacer(),
+              Align(
+                alignment: Alignment.center,
+                child: TextButton.icon(
+                  onPressed: data.onTap,
+                  label: Text(data.link),
+                  icon: const Icon(Icons.arrow_forward_rounded, size: 16),
+                ),
+              ),
+            ],
+          ),
+        ),
       ),
-      child: Stack(
+    );
+  }
+}
+
+class _StaffPerformancePanel extends StatelessWidget {
+  const _StaffPerformancePanel({
+    required this.title,
+    required this.staff,
+    required this.staffLabel,
+    required this.countLabel,
+    required this.onOpenAll,
+    required this.onOpenRow,
+  });
+
+  final String title;
+  final List<_StaffRow> staff;
+  final String staffLabel;
+  final String countLabel;
+  final VoidCallback onOpenAll;
+  final ValueChanged<_StaffRow> onOpenRow;
+
+  @override
+  Widget build(BuildContext context) {
+    final money = NumberFormat.currency(
+      locale: 'tr_TR',
+      symbol: '₺',
+      decimalDigits: 2,
+    );
+    final visible = staff.take(4).toList(growable: false);
+    final total = visible.fold<int>(0, (sum, row) => sum + row.total);
+    final completed = visible.fold<int>(0, (sum, row) => sum + row.completed);
+    final pending = visible.fold<int>(0, (sum, row) => sum + row.pending);
+    final turnover = visible.fold<double>(0, (sum, row) => sum + row.turnover);
+
+    return _WhitePanel(
+      title: title,
+      action: TextButton.icon(
+        onPressed: onOpenAll,
+        label: const Text('Tümünü Gör'),
+        icon: const Icon(Icons.arrow_forward_rounded, size: 16),
+      ),
+      child: Column(
         children: [
-          Positioned(
-            right: -12,
-            bottom: -16,
-            child: Icon(
-              data.icon,
-              size: 92,
-              color: Colors.white.withValues(alpha: .08),
+          _PerformanceHeader(
+            first: staffLabel,
+            second: countLabel,
+            showTurnover: true,
+          ),
+          const Divider(height: 1),
+          if (visible.isEmpty)
+            const _EmptyPanelText('Bu dönemde personel hareketi bulunmuyor.')
+          else
+            for (final row in visible)
+              _PerformanceRow(
+                row: row,
+                money: money,
+                onTap: () => onOpenRow(row),
+              ),
+          const Divider(height: 1),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
+            child: Row(
+              children: [
+                const Expanded(
+                  flex: 4,
+                  child: Text('Toplam', style: TextStyle(fontWeight: FontWeight.w900)),
+                ),
+                Expanded(child: Text('$total', textAlign: TextAlign.center, style: const TextStyle(fontWeight: FontWeight.w900))),
+                Expanded(child: Text('$completed', textAlign: TextAlign.center, style: const TextStyle(color: Color(0xFF12A35A), fontWeight: FontWeight.w900))),
+                Expanded(child: Text('$pending', textAlign: TextAlign.center, style: const TextStyle(color: Color(0xFFF18722), fontWeight: FontWeight.w900))),
+                Expanded(
+                  flex: 2,
+                  child: FittedBox(
+                    fit: BoxFit.scaleDown,
+                    alignment: Alignment.centerRight,
+                    child: Text(money.format(turnover), style: const TextStyle(fontWeight: FontWeight.w900)),
+                  ),
+                ),
+                const SizedBox(width: 22),
+              ],
             ),
           ),
           Padding(
-            padding: const EdgeInsets.all(16),
-            child: Row(
-              children: [
-                Container(
-                  width: 42,
-                  height: 42,
-                  decoration: BoxDecoration(
-                    color: Colors.white.withValues(alpha: .16),
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                  child: Icon(data.icon, color: Colors.white),
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        data.value,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 22,
-                          fontWeight: FontWeight.w900,
-                        ),
-                      ),
-                      const SizedBox(height: 2),
-                      Text(
-                        data.label,
-                        style: TextStyle(
-                          color: Colors.white.withValues(alpha: .85),
-                          fontWeight: FontWeight.w700,
-                          fontSize: 12,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ],
+            padding: const EdgeInsets.only(bottom: 4),
+            child: TextButton.icon(
+              onPressed: onOpenAll,
+              label: Text('$staffLabel Performans Raporu'),
+                    icon: const Icon(Icons.arrow_forward_rounded, size: 16),
             ),
           ),
         ],
@@ -380,258 +852,337 @@ class _MetricCard extends StatelessWidget {
   }
 }
 
-class _FilterPanel extends StatelessWidget {
-  const _FilterPanel({
-    required this.searchController,
-    required this.status,
-    required this.serviceType,
-    required this.startDate,
-    required this.endDate,
-    required this.onStatusChanged,
-    required this.onServiceTypeChanged,
-    required this.onPickStart,
-    required this.onPickEnd,
-    required this.onApply,
-    required this.onClear,
+class _PerformanceHeader extends StatelessWidget {
+  const _PerformanceHeader({
+    required this.first,
+    required this.second,
+    required this.showTurnover,
   });
 
-  final TextEditingController searchController;
-  final String status;
-  final String serviceType;
-  final DateTime? startDate;
-  final DateTime? endDate;
-  final ValueChanged<String> onStatusChanged;
-  final ValueChanged<String> onServiceTypeChanged;
-  final VoidCallback onPickStart;
-  final VoidCallback onPickEnd;
-  final VoidCallback onApply;
-  final VoidCallback onClear;
+  final String first;
+  final String second;
+  final bool showTurnover;
 
   @override
   Widget build(BuildContext context) {
-    final darkTheme = ThemeData.dark(useMaterial3: true).copyWith(
-      colorScheme: const ColorScheme.dark(
-        primary: Color(0xFF17C7D1),
-        secondary: Color(0xFF65DDE4),
-        surface: Color(0xFF102A3D),
-      ),
-      inputDecorationTheme: InputDecorationTheme(
-        filled: true,
-        fillColor: const Color(0xFF102A3D),
-        contentPadding: const EdgeInsets.symmetric(horizontal: 13, vertical: 13),
-        border: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(11),
-          borderSide: const BorderSide(color: Color(0xFF295169)),
-        ),
-        enabledBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(11),
-          borderSide: const BorderSide(color: Color(0xFF295169)),
-        ),
-        focusedBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(11),
-          borderSide: const BorderSide(color: Color(0xFF17C7D1), width: 1.6),
-        ),
-      ),
+    const style = TextStyle(
+      color: Color(0xFF68798C),
+      fontSize: 10.5,
+      fontWeight: FontWeight.w700,
     );
-    return Theme(
-      data: darkTheme,
-      child: _Panel(
-      title: 'Filtreler',
-      icon: Icons.tune_rounded,
-      child: Wrap(
-        spacing: 10,
-        runSpacing: 10,
-        crossAxisAlignment: WrapCrossAlignment.center,
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
+      child: Row(
         children: [
-          SizedBox(
-            width: 240,
-            child: TextField(
-              controller: searchController,
-              onSubmitted: (_) => onApply(),
-              style: const TextStyle(color: Colors.white),
-              decoration: const InputDecoration(
-                hintText: 'Müşteri ara...',
-                prefixIcon: Icon(Icons.search_rounded),
-              ),
-            ),
-          ),
-          SizedBox(
-            width: 190,
-            child: DropdownButtonFormField<String>(
-              initialValue: serviceType,
-              items: const [
-                DropdownMenuItem(value: 'all', child: Text('Tüm Servis Türleri')),
-                DropdownMenuItem(value: 'Filtre Değişimi', child: Text('Filtre Değişimi')),
-                DropdownMenuItem(value: 'Cihaz Montajı', child: Text('Cihaz Montajı')),
-                DropdownMenuItem(value: 'Arıza', child: Text('Arıza')),
-                DropdownMenuItem(value: 'Bakım', child: Text('Bakım')),
-              ],
-              onChanged: (value) => onServiceTypeChanged(value ?? 'all'),
-            ),
-          ),
-          SizedBox(
-            width: 175,
-            child: DropdownButtonFormField<String>(
-              initialValue: status,
-              items: const [
-                DropdownMenuItem(value: 'all', child: Text('Tüm Durumlar')),
-                DropdownMenuItem(value: 'pending', child: Text('Beklemede')),
-                DropdownMenuItem(value: 'assigned', child: Text('Atandı')),
-                DropdownMenuItem(value: 'in_progress', child: Text('Devam Ediyor')),
-                DropdownMenuItem(value: 'completed', child: Text('Tamamlandı')),
-                DropdownMenuItem(value: 'cancelled', child: Text('İptal')),
-              ],
-              onChanged: (value) => onStatusChanged(value ?? 'all'),
-            ),
-          ),
-          _DateButton(label: 'Başlangıç', value: startDate, onTap: onPickStart),
-          _DateButton(label: 'Bitiş', value: endDate, onTap: onPickEnd),
-          FilledButton.icon(
-            onPressed: onApply,
-            icon: const Icon(Icons.filter_alt_rounded),
-            label: const Text('Filtrele'),
-          ),
-          OutlinedButton.icon(
-            onPressed: onClear,
-            icon: const Icon(Icons.restart_alt_rounded),
-            label: const Text('Temizle'),
-          ),
+          Expanded(flex: 4, child: Text(first, style: style)),
+          Expanded(child: Text(second, textAlign: TextAlign.center, style: style)),
+          const Expanded(child: Text('Tamamlanan', textAlign: TextAlign.center, style: style)),
+          const Expanded(child: Text('Bekleyen', textAlign: TextAlign.center, style: style)),
+          if (showTurnover)
+            const Expanded(flex: 2, child: Text('Ciro', textAlign: TextAlign.right, style: style)),
+          const SizedBox(width: 22),
         ],
-      ),
       ),
     );
   }
 }
 
-class _DateButton extends StatelessWidget {
-  const _DateButton({required this.label, required this.value, required this.onTap});
-  final String label;
-  final DateTime? value;
+class _PerformanceRow extends StatelessWidget {
+  const _PerformanceRow({
+    required this.row,
+    required this.money,
+    required this.onTap,
+  });
+
+  final _StaffRow row;
+  final NumberFormat money;
   final VoidCallback onTap;
 
   @override
   Widget build(BuildContext context) {
-    return OutlinedButton.icon(
-      onPressed: onTap,
-      icon: const Icon(Icons.calendar_month_outlined),
-      label: Text(
-        value == null ? label : DateFormat('dd.MM.yyyy').format(value!),
-      ),
-    );
-  }
-}
-
-class _RecentServices extends StatelessWidget {
-  const _RecentServices({required this.rows});
-  final List<Map<String, dynamic>> rows;
-
-  @override
-  Widget build(BuildContext context) {
-    return _Panel(
-      title: 'Son Servis Talepleri',
-      icon: Icons.home_repair_service_rounded,
-      action: TextButton(
-        onPressed: () => context.go('/manager/service-requests'),
-        child: const Text('Tümünü Gör'),
-      ),
-      child: rows.isEmpty
-          ? const _EmptyText('Filtreye uygun servis bulunamadı.')
-          : Column(
-              children: [
-                for (final row in rows.take(8))
-                  _ServiceRow(row: row),
-              ],
-            ),
-    );
-  }
-}
-
-class _ServiceRow extends StatelessWidget {
-  const _ServiceRow({required this.row});
-  final Map<String, dynamic> row;
-
-  @override
-  Widget build(BuildContext context) {
-    final status = row['status']?.toString() ?? '';
-    final statusData = _statusData(status);
-    final date = DateTime.tryParse(row['planned_date']?.toString() ?? '') ??
-        DateTime.tryParse(row['created_at']?.toString() ?? '');
-    final price = (row['price'] as num?)?.toDouble() ?? 0;
     return InkWell(
-      borderRadius: BorderRadius.circular(12),
-      onTap: () => context.go('/manager/service-requests'),
-      child: Container(
-        padding: const EdgeInsets.symmetric(vertical: 11, horizontal: 4),
-        decoration: const BoxDecoration(
-          border: Border(bottom: BorderSide(color: Color(0xFF19364A))),
-        ),
+      onTap: onTap,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
         child: Row(
           children: [
-            CircleAvatar(
-              radius: 19,
-              backgroundColor: const Color(0xFF12364B),
-              child: Text(
-                _initials(row['customer_name']?.toString() ?? '-'),
-                style: const TextStyle(
-                  color: Color(0xFF6CE0E7),
-                  fontWeight: FontWeight.w800,
-                ),
-              ),
-            ),
-            const SizedBox(width: 10),
             Expanded(
-              flex: 3,
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
+              flex: 4,
+              child: Row(
                 children: [
-                  Text(
-                    row['customer_name']?.toString() ?? 'Müşteri',
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(
-                      color: Colors.white,
-                      fontWeight: FontWeight.w800,
+                  CircleAvatar(
+                    radius: 15,
+                    backgroundColor: _avatarColor(row.name).withValues(alpha: .14),
+                    child: Text(
+                      _initials(row.name),
+                      style: TextStyle(
+                        color: _avatarColor(row.name),
+                        fontSize: 10,
+                        fontWeight: FontWeight.w900,
+                      ),
                     ),
                   ),
-                  Text(
-                    row['service_type']?.toString() ?? 'Servis',
-                    style: const TextStyle(color: Color(0xFF86A2B4), fontSize: 12),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      row.name,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 12),
+                    ),
                   ),
                 ],
               ),
             ),
+            Expanded(child: Text('${row.total}', textAlign: TextAlign.center, style: const TextStyle(fontWeight: FontWeight.w800))),
+            Expanded(child: Text('${row.completed}', textAlign: TextAlign.center, style: const TextStyle(color: Color(0xFF12A35A), fontWeight: FontWeight.w800))),
+            Expanded(child: Text('${row.pending}', textAlign: TextAlign.center, style: const TextStyle(color: Color(0xFFF18722), fontWeight: FontWeight.w800))),
             Expanded(
               flex: 2,
-              child: Text(
-                row['technician_name']?.toString() ?? 'Atanmadı',
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: const TextStyle(color: Color(0xFFC1D2DC)),
+              child: FittedBox(
+                fit: BoxFit.scaleDown,
+                alignment: Alignment.centerRight,
+                child: Text(money.format(row.turnover), style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 11.5)),
               ),
             ),
-            SizedBox(
-              width: 105,
-              child: _StatusBadge(label: statusData.$1, color: statusData.$2),
+            const SizedBox(width: 4),
+            const Icon(Icons.chevron_right_rounded, size: 18, color: Color(0xFF8392A5)),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _DailyProgramPanel extends StatelessWidget {
+  const _DailyProgramPanel({required this.rows});
+
+  final List<_StaffRow> rows;
+
+  @override
+  Widget build(BuildContext context) {
+    final visible = rows.take(4).toList(growable: false);
+    final total = visible.fold<int>(0, (sum, row) => sum + row.total);
+    final completed = visible.fold<int>(0, (sum, row) => sum + row.completed);
+    final pending = visible.fold<int>(0, (sum, row) => sum + row.pending);
+
+    return _WhitePanel(
+      title: 'Bugünkü İş Programı',
+      action: TextButton.icon(
+        onPressed: () => context.go('/manager/service-planning'),
+        label: const Text('Tümünü Gör'),
+        icon: const Icon(Icons.arrow_forward_rounded, size: 16),
+      ),
+      child: Column(
+        children: [
+          const Padding(
+            padding: EdgeInsets.symmetric(horizontal: 14, vertical: 9),
+            child: Row(
+              children: [
+                Expanded(flex: 4, child: Text('Tekniker', style: _headerStyle)),
+                Expanded(child: Text('Toplam İş', textAlign: TextAlign.center, style: _headerStyle)),
+                Expanded(child: Text('Tamamlanan', textAlign: TextAlign.center, style: _headerStyle)),
+                Expanded(child: Text('Bekleyen', textAlign: TextAlign.center, style: _headerStyle)),
+                SizedBox(width: 22),
+              ],
             ),
-            SizedBox(
-              width: 90,
-              child: Text(
-                date == null ? '-' : DateFormat('dd.MM.yyyy').format(date.toLocal()),
-                textAlign: TextAlign.center,
-                style: const TextStyle(color: Color(0xFF8FA9BB), fontSize: 12),
-              ),
-            ),
-            SizedBox(
-              width: 95,
-              child: Text(
-                NumberFormat.currency(locale: 'tr_TR', symbol: '₺', decimalDigits: 0)
-                    .format(price),
-                textAlign: TextAlign.right,
-                style: const TextStyle(
-                  color: Colors.white,
-                  fontWeight: FontWeight.w800,
+          ),
+          const Divider(height: 1),
+          if (visible.isEmpty)
+            const _EmptyPanelText('Bu dönemde tekniker işi bulunmuyor.')
+          else
+            for (final row in visible)
+              InkWell(
+                onTap: () => context.go('/manager/service-planning'),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        flex: 4,
+                        child: Row(
+                          children: [
+                            CircleAvatar(
+                              radius: 15,
+                              backgroundColor: _avatarColor(row.name).withValues(alpha: .14),
+                              child: Text(
+                                _initials(row.name),
+                                style: TextStyle(color: _avatarColor(row.name), fontWeight: FontWeight.w900, fontSize: 10),
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            Expanded(child: Text(row.name, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 12))),
+                          ],
+                        ),
+                      ),
+                      Expanded(child: Text('${row.total}', textAlign: TextAlign.center, style: const TextStyle(fontWeight: FontWeight.w800))),
+                      Expanded(child: Text('${row.completed}', textAlign: TextAlign.center, style: const TextStyle(color: Color(0xFF12A35A), fontWeight: FontWeight.w800))),
+                      Expanded(child: Text('${row.pending}', textAlign: TextAlign.center, style: const TextStyle(color: Color(0xFFF18722), fontWeight: FontWeight.w800))),
+                      const Icon(Icons.chevron_right_rounded, size: 18, color: Color(0xFF8392A5)),
+                    ],
+                  ),
                 ),
               ),
+          const Divider(height: 1),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
+            child: Row(
+              children: [
+                const Expanded(flex: 4, child: Text('Toplam', style: TextStyle(fontWeight: FontWeight.w900))),
+                Expanded(child: Text('$total', textAlign: TextAlign.center, style: const TextStyle(fontWeight: FontWeight.w900))),
+                Expanded(child: Text('$completed', textAlign: TextAlign.center, style: const TextStyle(color: Color(0xFF12A35A), fontWeight: FontWeight.w900))),
+                Expanded(child: Text('$pending', textAlign: TextAlign.center, style: const TextStyle(color: Color(0xFFF18722), fontWeight: FontWeight.w900))),
+                const SizedBox(width: 22),
+              ],
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.only(bottom: 4),
+            child: TextButton.icon(
+              onPressed: () => context.go('/manager/service-planning'),
+              label: const Text('Günlük İş Programı'),
+                    icon: const Icon(Icons.arrow_forward_rounded, size: 16),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  static const _headerStyle = TextStyle(
+    color: Color(0xFF68798C),
+    fontSize: 10.5,
+    fontWeight: FontWeight.w700,
+  );
+}
+
+class _PaymentsPanel extends StatelessWidget {
+  const _PaymentsPanel({required this.rows});
+
+  final List<Map<String, dynamic>> rows;
+
+  @override
+  Widget build(BuildContext context) {
+    final money = NumberFormat.currency(
+      locale: 'tr_TR',
+      symbol: '₺',
+      decimalDigits: 2,
+    );
+    final visible = rows.take(5).toList(growable: false);
+    final total = rows.fold<double>(0, (sum, row) => sum + _asDouble(row['amount']));
+
+    return _WhitePanel(
+      title: 'Bugünkü Tahsilatlar',
+      action: TextButton.icon(
+        onPressed: () => context.go('/manager/payments'),
+        label: const Text('Tümünü Gör'),
+        icon: const Icon(Icons.arrow_forward_rounded, size: 16),
+      ),
+      child: Column(
+        children: [
+          const Padding(
+            padding: EdgeInsets.symmetric(horizontal: 14, vertical: 9),
+            child: Row(
+              children: [
+                Expanded(flex: 3, child: Text('Müşteri', style: _paymentHeaderStyle)),
+                Expanded(flex: 3, child: Text('İşlem', style: _paymentHeaderStyle)),
+                Expanded(flex: 2, child: Text('Tutar', textAlign: TextAlign.right, style: _paymentHeaderStyle)),
+                Expanded(flex: 2, child: Text('Sekreter', textAlign: TextAlign.center, style: _paymentHeaderStyle)),
+                SizedBox(width: 48, child: Text('Saat', textAlign: TextAlign.right, style: _paymentHeaderStyle)),
+              ],
+            ),
+          ),
+          const Divider(height: 1),
+          if (visible.isEmpty)
+            const _EmptyPanelText('Bu dönemde tahsilat bulunmuyor.')
+          else
+            for (final row in visible) _PaymentRow(row: row, money: money),
+          const Divider(height: 1),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
+            child: Row(
+              children: [
+                const Expanded(child: Text('Toplam Tahsilat', style: TextStyle(fontWeight: FontWeight.w900))),
+                Text(money.format(total), style: const TextStyle(color: Color(0xFF12A35A), fontWeight: FontWeight.w900)),
+              ],
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.only(bottom: 4),
+            child: TextButton.icon(
+              onPressed: () => context.go('/manager/payments'),
+              label: const Text('Tahsilat Raporu'),
+                    icon: const Icon(Icons.arrow_forward_rounded, size: 16),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  static const _paymentHeaderStyle = TextStyle(
+    color: Color(0xFF68798C),
+    fontSize: 10.5,
+    fontWeight: FontWeight.w700,
+  );
+}
+
+class _PaymentRow extends StatelessWidget {
+  const _PaymentRow({required this.row, required this.money});
+
+  final Map<String, dynamic> row;
+  final NumberFormat money;
+
+  @override
+  Widget build(BuildContext context) {
+    final customer = row['customers'];
+    String customerName = 'Müşteri';
+    if (customer is Map) {
+      final full = customer['full_name']?.toString().trim() ?? '';
+      final company = customer['company_name']?.toString().trim() ?? '';
+      customerName = full.isNotEmpty ? full : (company.isNotEmpty ? company : customerName);
+    }
+    final service = row['_service'];
+    var action = row['description']?.toString().trim() ?? '';
+    var secretary = '-';
+    if (service is Map) {
+      final serviceType = service['service_type']?.toString().trim() ?? '';
+      if (serviceType.isNotEmpty) action = serviceType;
+      final secretaryName = service['secretary_name']?.toString().trim() ?? '';
+      if (secretaryName.isNotEmpty) secretary = secretaryName;
+    }
+    if (action.isEmpty) action = 'Tahsilat';
+    final date = DateTime.tryParse(row['payment_date']?.toString() ?? '')?.toLocal();
+
+    return InkWell(
+      onTap: () => context.go('/manager/payments'),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+        child: Row(
+          children: [
+            Expanded(
+              flex: 3,
+              child: Text(customerName, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 11.5)),
+            ),
+            Expanded(
+              flex: 3,
+              child: Text(action, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 11.5)),
+            ),
+            Expanded(
+              flex: 2,
+              child: FittedBox(
+                fit: BoxFit.scaleDown,
+                alignment: Alignment.centerRight,
+                child: Text(money.format(_asDouble(row['amount'])), style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 11.5)),
+              ),
+            ),
+            Expanded(
+              flex: 2,
+              child: Text(secretary, textAlign: TextAlign.center, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 11)),
+            ),
+            SizedBox(
+              width: 48,
+              child: Text(date == null ? '-' : DateFormat('HH:mm').format(date), textAlign: TextAlign.right, style: const TextStyle(color: Color(0xFF718197), fontSize: 11)),
             ),
           ],
         ),
@@ -640,216 +1191,136 @@ class _ServiceRow extends StatelessWidget {
   }
 }
 
-class _TodaySchedule extends StatelessWidget {
-  const _TodaySchedule({required this.rows});
-  final List<Map<String, dynamic>> rows;
-
-  String _timeLabel(Map<String, dynamic> row) {
-    final raw = row['planned_date']?.toString();
-    final date = raw == null ? null : DateTime.tryParse(raw)?.toLocal();
-    if (date == null || ((date.hour == 0 || date.hour == 3) && date.minute == 0)) {
-      return 'Gün İçinde';
-    }
-    return DateFormat('HH:mm').format(date);
-  }
+class _QuickAccessPanel extends StatelessWidget {
+  const _QuickAccessPanel();
 
   @override
   Widget build(BuildContext context) {
-    return _Panel(
-      title: 'Bugünkü İş Programı',
-      icon: Icons.today_rounded,
-      action: TextButton(
-        onPressed: () => context.go('/manager/service-planning'),
-        child: const Text('Takvim'),
-      ),
-      child: rows.isEmpty
-          ? const _EmptyText('Bugün için planlı iş bulunmuyor.')
-          : Column(
-              children: [
-                for (final row in rows.take(5))
-                  ListTile(
-                    dense: true,
-                    contentPadding: EdgeInsets.zero,
-                    leading: Container(
-                      width: 72,
-                      padding: const EdgeInsets.symmetric(vertical: 7),
+    final actions = <_QuickAction>[
+      _QuickAction('Müşteriler', 'Müşteri listesine git', Icons.groups_2_outlined, const Color(0xFF2879F5), '/manager/customers'),
+      _QuickAction('Yeni Servis Talebi', 'Servis talebi oluştur', Icons.add_box_outlined, const Color(0xFF7559E8), '/manager/customers'),
+      _QuickAction('Servis Talepleri', 'Tüm servis talepleri', Icons.event_note_outlined, const Color(0xFFF19A39), '/manager/service-requests'),
+      _QuickAction('Teknikerler', 'Tekniker listesi', Icons.engineering_outlined, const Color(0xFF2879F5), '/manager/users'),
+      _QuickAction('Stok & Ürünler', 'Ürün ve stok yönetimi', Icons.inventory_2_outlined, const Color(0xFF37B766), '/manager/products'),
+      _QuickAction('Tahsilatlar', 'Tahsilat işlemleri', Icons.account_balance_wallet_outlined, const Color(0xFF15B8BE), '/manager/payments'),
+      _QuickAction('Raporlar', 'Tüm raporlar', Icons.bar_chart_rounded, const Color(0xFF7559E8), '/manager/reports'),
+      _QuickAction('Ayarlar', 'Sistem ayarları', Icons.settings_outlined, const Color(0xFF637083), '/manager/settings'),
+      _QuickAction('Bildirimler', 'Sistem bildirimleri', Icons.notifications_none_rounded, const Color(0xFFE55757), '/notifications'),
+    ];
+
+    return _WhitePanel(
+      title: 'Hızlı Erişim',
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: LayoutBuilder(
+          builder: (context, constraints) {
+            final count = constraints.maxWidth >= 660 ? 3 : constraints.maxWidth >= 420 ? 2 : 1;
+            return GridView.builder(
+              shrinkWrap: true,
+              physics: const NeverScrollableScrollPhysics(),
+              itemCount: actions.length,
+              gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                crossAxisCount: count,
+                crossAxisSpacing: 10,
+                mainAxisSpacing: 10,
+                childAspectRatio: count == 1 ? 4 : 2.6,
+              ),
+              itemBuilder: (context, index) {
+                final action = actions[index];
+                return Material(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(12),
+                  child: InkWell(
+                    onTap: () => context.go(action.route),
+                    borderRadius: BorderRadius.circular(12),
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
                       decoration: BoxDecoration(
-                        color: const Color(0xFF10384B),
-                        borderRadius: BorderRadius.circular(10),
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(color: const Color(0xFFE3E9F0)),
                       ),
-                      child: Text(
-                        _timeLabel(row),
-                        textAlign: TextAlign.center,
-                        style: const TextStyle(
-                          color: Color(0xFF67DFE5),
-                          fontWeight: FontWeight.w900,
-                        ),
-                      ),
-                    ),
-                    title: Text(
-                      row['customer_name']?.toString() ?? 'Müşteri',
-                      style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w800),
-                    ),
-                    subtitle: Text(
-                      row['service_type']?.toString() ?? 'Servis',
-                      style: const TextStyle(color: Color(0xFF8FA9BB)),
-                    ),
-                  ),
-              ],
-            ),
-    );
-  }
-}
-
-class _RecentPayments extends StatelessWidget {
-  const _RecentPayments({required this.rows});
-  final List<Map<String, dynamic>> rows;
-
-  @override
-  Widget build(BuildContext context) {
-    return _Panel(
-      title: 'Son Tahsilatlar',
-      icon: Icons.payments_rounded,
-      action: TextButton(
-        onPressed: () => context.go('/manager/payments'),
-        child: const Text('Tümünü Gör'),
-      ),
-      child: rows.isEmpty
-          ? const _EmptyText('Henüz tahsilat bulunmuyor.')
-          : Column(
-              children: [
-                for (final row in rows.take(5))
-                  ListTile(
-                    dense: true,
-                    contentPadding: EdgeInsets.zero,
-                    leading: const CircleAvatar(
-                      backgroundColor: Color(0xFF123B3E),
-                      child: Icon(Icons.check_rounded, color: Color(0xFF57D6A4)),
-                    ),
-                    title: Text(
-                      row['customer_name']?.toString() ?? 'Müşteri',
-                      style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w800),
-                    ),
-                    subtitle: Text(
-                      row['payment_method_label']?.toString() ?? 'Tahsilat',
-                      style: const TextStyle(color: Color(0xFF8FA9BB)),
-                    ),
-                    trailing: Text(
-                      NumberFormat.currency(locale: 'tr_TR', symbol: '₺', decimalDigits: 0)
-                          .format(row['amount'] ?? 0),
-                      style: const TextStyle(
-                        color: Color(0xFF6BE1B0),
-                        fontWeight: FontWeight.w900,
+                      child: Row(
+                        children: [
+                          Container(
+                            width: 38,
+                            height: 38,
+                            decoration: BoxDecoration(
+                              color: action.color.withValues(alpha: .10),
+                              shape: BoxShape.circle,
+                            ),
+                            child: Icon(action.icon, color: action.color, size: 20),
+                          ),
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: Column(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(action.title, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 11.5)),
+                                const SizedBox(height: 2),
+                                Text(action.subtitle, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(color: Color(0xFF718197), fontSize: 9.5)),
+                              ],
+                            ),
+                          ),
+                        ],
                       ),
                     ),
                   ),
-              ],
-            ),
-    );
-  }
-}
-
-class _Announcements extends StatelessWidget {
-  const _Announcements();
-
-  @override
-  Widget build(BuildContext context) {
-    return const _Panel(
-      title: 'Duyurular',
-      icon: Icons.campaign_rounded,
-      child: Column(
-        children: [
-          _AnnouncementItem(
-            icon: Icons.auto_awesome_rounded,
-            title: 'MOTUS günlük kullanıma hazır',
-            subtitle: 'Servis ve müşteri akışlarınızı panelden takip edebilirsiniz.',
-          ),
-          SizedBox(height: 10),
-          _AnnouncementItem(
-            icon: Icons.backup_outlined,
-            title: 'Düzenli yedek alın',
-            subtitle: 'Canlı kullanım öncesinde Supabase yedeğinizi güncel tutun.',
-          ),
-        ],
+                );
+              },
+            );
+          },
+        ),
       ),
     );
   }
 }
 
-class _AnnouncementItem extends StatelessWidget {
-  const _AnnouncementItem({required this.icon, required this.title, required this.subtitle});
-  final IconData icon;
+class _QuickAction {
+  const _QuickAction(this.title, this.subtitle, this.icon, this.color, this.route);
   final String title;
   final String subtitle;
+  final IconData icon;
+  final Color color;
+  final String route;
+}
+
+class _WhitePanel extends StatelessWidget {
+  const _WhitePanel({required this.title, this.action, required this.child});
+
+  final String title;
+  final Widget? action;
+  final Widget child;
 
   @override
   Widget build(BuildContext context) {
     return Container(
-      padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
-        color: const Color(0xFF102A3D),
-        borderRadius: BorderRadius.circular(12),
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: const Color(0xFFE1E8F0)),
       ),
-      child: Row(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          Icon(icon, color: const Color(0xFF60DDE4)),
-          const SizedBox(width: 10),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
+          Padding(
+            padding: const EdgeInsets.fromLTRB(14, 10, 10, 7),
+            child: Row(
               children: [
-                Text(title, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w800)),
-                const SizedBox(height: 2),
-                Text(subtitle, style: const TextStyle(color: Color(0xFF8FA9BB), fontSize: 12)),
+                Expanded(
+                  child: Text(
+                    title,
+                    style: const TextStyle(
+                      color: Color(0xFF071D34),
+                      fontSize: 15,
+                      fontWeight: FontWeight.w900,
+                    ),
+                  ),
+                ),
+                if (action != null) action!,
               ],
             ),
           ),
-        ],
-      ),
-    );
-  }
-}
-
-class _Panel extends StatelessWidget {
-  const _Panel({required this.title, required this.icon, required this.child, this.action});
-  final String title;
-  final IconData icon;
-  final Widget child;
-  final Widget? action;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: const Color(0xFF0D2233),
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: const Color(0xFF1A3B51)),
-        boxShadow: const [
-          BoxShadow(color: Color(0x33000000), blurRadius: 18, offset: Offset(0, 8)),
-        ],
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Icon(icon, color: const Color(0xFF58DCE4), size: 20),
-              const SizedBox(width: 8),
-              Expanded(
-                child: Text(
-                  title,
-                  style: const TextStyle(
-                    color: Colors.white,
-                    fontSize: 16,
-                    fontWeight: FontWeight.w900,
-                  ),
-                ),
-              ),
-              if (action != null) action!,
-            ],
-          ),
-          const SizedBox(height: 14),
           child,
         ],
       ),
@@ -857,79 +1328,45 @@ class _Panel extends StatelessWidget {
   }
 }
 
-class _StatusBadge extends StatelessWidget {
-  const _StatusBadge({required this.label, required this.color});
-  final String label;
-  final Color color;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 5),
-      decoration: BoxDecoration(
-        color: color.withValues(alpha: .16),
-        borderRadius: BorderRadius.circular(20),
-        border: Border.all(color: color.withValues(alpha: .55)),
-      ),
-      child: Text(
-        label,
-        textAlign: TextAlign.center,
-        maxLines: 1,
-        overflow: TextOverflow.ellipsis,
-        style: TextStyle(color: color, fontSize: 11, fontWeight: FontWeight.w900),
-      ),
-    );
-  }
-}
-
-class _EmptyText extends StatelessWidget {
-  const _EmptyText(this.text);
+class _EmptyPanelText extends StatelessWidget {
+  const _EmptyPanelText(this.text);
   final String text;
 
   @override
   Widget build(BuildContext context) {
     return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 18),
+      padding: const EdgeInsets.symmetric(vertical: 30, horizontal: 12),
       child: Center(
-        child: Text(text, style: const TextStyle(color: Color(0xFF819BAC))),
+        child: Text(
+          text,
+          textAlign: TextAlign.center,
+          style: const TextStyle(color: Color(0xFF718197), fontSize: 12),
+        ),
       ),
     );
   }
 }
 
-class _MetricData {
-  const _MetricData(this.label, this.value, this.icon, this.colors);
-  final String label;
-  final String value;
-  final IconData icon;
-  final List<Color> colors;
-}
-
-(String, Color) _statusData(String status) {
-  switch (status) {
-    case 'completed':
-      return ('Tamamlandı', const Color(0xFF66DEA8));
-    case 'in_progress':
-      return ('Devam Ediyor', const Color(0xFF65C7FF));
-    case 'assigned':
-      return ('Atandı', const Color(0xFFB59BFF));
-    case 'cancelled':
-      return ('İptal', const Color(0xFFFF7E8C));
-    case 'could_not_complete':
-      return ('Tamamlanamadı', const Color(0xFFFFA65B));
-    default:
-      return ('Beklemede', const Color(0xFFFFC857));
-  }
-}
-
-String _initials(String value) {
-  final parts = value.trim().split(RegExp(r'\s+')).where((e) => e.isNotEmpty).toList();
-  if (parts.isEmpty) return '-';
+String _initials(String name) {
+  final parts = name.trim().split(RegExp(r'\s+')).where((e) => e.isNotEmpty).toList();
+  if (parts.isEmpty) return '?';
   if (parts.length == 1) return parts.first.substring(0, 1).toUpperCase();
   return '${parts.first.substring(0, 1)}${parts.last.substring(0, 1)}'.toUpperCase();
 }
 
-String _time(Object? value) {
-  final date = DateTime.tryParse(value?.toString() ?? '');
-  return date == null ? '--:--' : DateFormat('HH:mm').format(date.toLocal());
+Color _avatarColor(String value) {
+  const colors = <Color>[
+    Color(0xFF7559E8),
+    Color(0xFF2879F5),
+    Color(0xFF2E9D6B),
+    Color(0xFFE18A2D),
+    Color(0xFF15A8B8),
+  ];
+  final index = value.codeUnits.fold<int>(0, (sum, unit) => sum + unit) % colors.length;
+  return colors[index];
+}
+
+double _asDouble(Object? value) {
+  if (value is num) return value.toDouble();
+  return double.tryParse(value?.toString() ?? '') ?? 0;
 }
