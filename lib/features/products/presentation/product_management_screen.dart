@@ -20,6 +20,8 @@ class _ProductManagementScreenState extends ConsumerState<ProductManagementScree
   final _searchController = TextEditingController();
   String? _categoryFilter;
   bool _showPassive = true;
+  int _page = 0;
+  static const int _pageSize = 10;
   final Set<String> _selectedIds = <String>{};
 
   @override
@@ -38,7 +40,7 @@ class _ProductManagementScreenState extends ConsumerState<ProductManagementScree
       role: role,
       title: 'Ürünler',
       subtitle: 'Ürün kartlarını, bakım sürelerini ve stok miktarlarını profesyonel şekilde yönetin.',
-      dark: true,
+      dark: false,
       actions: [
         OutlinedButton.icon(
           onPressed: () => _showCategoryManager(context),
@@ -68,6 +70,10 @@ class _ProductManagementScreenState extends ConsumerState<ProductManagementScree
           final totalStock = products.where((item) => item.isActive).fold<double>(0, (sum, item) => sum + item.stockQuantity);
           final maintenanceTracked = products.where((item) => item.maintenanceMonths > 0).length;
           final selectedProducts = products.where((p) => _selectedIds.contains(p.id)).toList();
+          final pageCount = filtered.isEmpty ? 1 : ((filtered.length - 1) ~/ _pageSize) + 1;
+          final safePage = _page.clamp(0, pageCount - 1).toInt();
+          final start = safePage * _pageSize;
+          final paged = filtered.skip(start).take(_pageSize).toList(growable: false);
 
           return ListView(
             padding: const EdgeInsets.all(18),
@@ -83,10 +89,10 @@ class _ProductManagementScreenState extends ConsumerState<ProductManagementScree
                     spacing: 12,
                     runSpacing: 12,
                     children: [
-                      _DarkMetric(width: width, title: 'Toplam Ürün', value: '${products.length}', detail: 'Ürün kartı', icon: Icons.inventory_2_outlined, color: const Color(0xFF2F80ED)),
-                      _DarkMetric(width: width, title: 'Aktif Ürün', value: '$activeCount', detail: 'Kullanımda', icon: Icons.check_circle_outline, color: const Color(0xFF35C978)),
-                      _DarkMetric(width: width, title: 'Arşivde', value: '$archivedCount', detail: 'Geçmişi korunuyor', icon: Icons.archive_outlined, color: const Color(0xFF8B5CF6)),
-                      _DarkMetric(width: width, title: 'Aktif Stok', value: _compact(totalStock), detail: 'Arşiv ürünleri hariç • $maintenanceTracked bakım takipli', icon: Icons.warehouse_outlined, color: const Color(0xFFF4B740)),
+                      _LightMetric(width: width, title: 'Toplam Ürün', value: '${products.length}', detail: 'Ürün kartı', icon: Icons.inventory_2_outlined, color: const Color(0xFF2F80ED)),
+                      _LightMetric(width: width, title: 'Aktif Ürün', value: '$activeCount', detail: 'Kullanımda', icon: Icons.check_circle_outline, color: const Color(0xFF35C978)),
+                      _LightMetric(width: width, title: 'Arşivde', value: '$archivedCount', detail: 'Geçmişi korunuyor', icon: Icons.archive_outlined, color: const Color(0xFF8B5CF6)),
+                      _LightMetric(width: width, title: 'Aktif Stok', value: _compact(totalStock), detail: 'Arşiv ürünleri hariç • $maintenanceTracked bakım takipli', icon: Icons.warehouse_outlined, color: const Color(0xFFF4B740)),
                     ],
                   );
                 },
@@ -104,7 +110,7 @@ class _ProductManagementScreenState extends ConsumerState<ProductManagementScree
                         width: MediaQuery.sizeOf(context).width < 600 ? (MediaQuery.sizeOf(context).width - 64).clamp(220.0, 350.0) : 350,
                         child: TextField(
                           controller: _searchController,
-                          onChanged: (_) => setState(() {}),
+                          onChanged: (_) => setState(() => _page = 0),
                           decoration: const InputDecoration(
                             prefixIcon: Icon(Icons.search),
                             hintText: 'Ürün adı veya kategori ara...',
@@ -125,13 +131,13 @@ class _ProductManagementScreenState extends ConsumerState<ProductManagementScree
                                   ),
                                 ),
                           ],
-                          onChanged: (value) => setState(() => _categoryFilter = value == '__all__' ? null : value),
+                          onChanged: (value) => setState(() { _categoryFilter = value == '__all__' ? null : value; _page = 0; }),
                         ),
                       ),
                       FilterChip(
                         selected: _showPassive,
                         label: const Text('Arşivdekileri göster'),
-                        onSelected: (value) => setState(() => _showPassive = value),
+                        onSelected: (value) => setState(() { _showPassive = value; _page = 0; }),
                       ),
                       FilledButton.tonalIcon(
                         onPressed: products.where((p) => p.isActive).isEmpty ? null : () => _showStockPicker(products),
@@ -147,34 +153,23 @@ class _ProductManagementScreenState extends ConsumerState<ProductManagementScree
                 Container(
                   padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
                   decoration: BoxDecoration(
-                    color: const Color(0xFF12313C),
+                    color: Colors.white,
                     borderRadius: BorderRadius.circular(14),
-                    border: Border.all(color: const Color(0xFF1E5666)),
+                    border: Border.all(color: const Color(0xFFDCE6EF)),
                   ),
                   child: Wrap(
-                    spacing: 10,
+                    spacing: 8,
                     runSpacing: 8,
                     crossAxisAlignment: WrapCrossAlignment.center,
                     children: [
-                      Text('${_selectedIds.length} ürün seçildi', style: const TextStyle(fontWeight: FontWeight.w900)),
-                      FilledButton.icon(
-                        onPressed: selectedProducts.any((p) => p.isActive && p.stockQuantity > 0)
-                            ? () => _bulkRemoveStock(selectedProducts)
-                            : null,
-                        icon: const Icon(Icons.remove_circle_outline),
-                        label: const Text('Toplu Stok Düş'),
-                      ),
-                      OutlinedButton.icon(
-                        onPressed: selectedProducts.any((p) => p.isActive)
-                            ? () => _bulkArchive(selectedProducts)
-                            : null,
-                        icon: const Icon(Icons.archive_outlined),
-                        label: const Text('Seçilenleri Arşivle'),
-                      ),
-                      TextButton(
-                        onPressed: () => setState(_selectedIds.clear),
-                        child: const Text('Seçimi Temizle'),
-                      ),
+                      Text('${_selectedIds.length} ürün seçildi', style: const TextStyle(fontWeight: FontWeight.w900, color: Color(0xFF10243A))),
+                      OutlinedButton.icon(onPressed: () => _bulkAddStock(selectedProducts), icon: const Icon(Icons.add_circle_outline), label: const Text('Stok Ekle')),
+                      OutlinedButton.icon(onPressed: selectedProducts.any((p) => p.isActive && p.stockQuantity > 0) ? () => _bulkRemoveStock(selectedProducts) : null, icon: const Icon(Icons.remove_circle_outline), label: const Text('Stoktan Düş')),
+                      OutlinedButton.icon(onPressed: () => _bulkSetStock(selectedProducts), icon: const Icon(Icons.tune_rounded), label: const Text('Stoku Belirle')),
+                      OutlinedButton.icon(onPressed: selectedProducts.any((p) => p.stockQuantity > 0) ? () => _bulkZeroStock(selectedProducts) : null, icon: const Icon(Icons.exposure_zero_rounded), label: const Text('Stoku Sıfırla')),
+                      OutlinedButton.icon(onPressed: selectedProducts.any((p) => !p.isActive) ? () => _bulkActivate(selectedProducts) : null, icon: const Icon(Icons.check_circle_outline), label: const Text('Aktif Yap')),
+                      OutlinedButton.icon(onPressed: selectedProducts.any((p) => p.isActive) ? () => _bulkArchive(selectedProducts) : null, icon: const Icon(Icons.archive_outlined), label: const Text('Arşive Al')),
+                      TextButton(onPressed: () => setState(_selectedIds.clear), child: const Text('Seçimi Temizle')),
                     ],
                   ),
                 ),
@@ -183,8 +178,8 @@ class _ProductManagementScreenState extends ConsumerState<ProductManagementScree
               if (filtered.isEmpty)
                 const _EmptyProducts()
               else
-                _DarkProductTable(
-                  products: filtered,
+                _LightProductTable(
+                  products: paged,
                   selectedIds: _selectedIds,
                   onSelect: (product, selected) {
                     setState(() {
@@ -198,9 +193,9 @@ class _ProductManagementScreenState extends ConsumerState<ProductManagementScree
                   onSelectAll: (selected) {
                     setState(() {
                       if (selected) {
-                        _selectedIds.addAll(filtered.map((p) => p.id));
+                        _selectedIds.addAll(paged.map((p) => p.id));
                       } else {
-                        _selectedIds.removeAll(filtered.map((p) => p.id));
+                        _selectedIds.removeAll(paged.map((p) => p.id));
                       }
                     });
                   },
@@ -210,6 +205,16 @@ class _ProductManagementScreenState extends ConsumerState<ProductManagementScree
                   onRemoveStock: _showRemoveStockDialog,
                   onArchive: _archiveProduct,
                 ),
+              if (filtered.isNotEmpty) ...[
+                const SizedBox(height: 10),
+                _ProductPagination(
+                  total: filtered.length,
+                  page: safePage,
+                  pageCount: pageCount,
+                  pageSize: _pageSize,
+                  onPage: (value) => setState(() => _page = value),
+                ),
+              ],
             ],
           );
         },
@@ -577,6 +582,139 @@ class _ProductManagementScreenState extends ConsumerState<ProductManagementScree
     }
   }
 
+  Future<double?> _askBulkQuantity(String title, {double? initialValue}) async {
+    final controller = TextEditingController(
+      text: initialValue == null ? '' : _compact(initialValue),
+    );
+    final result = await showDialog<double>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: Text(title),
+        content: SizedBox(
+          width: 420,
+          child: TextField(
+            controller: controller,
+            autofocus: true,
+            keyboardType: const TextInputType.numberWithOptions(decimal: true),
+            decoration: const InputDecoration(labelText: 'Miktar'),
+          ),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(dialogContext), child: const Text('Vazgeç')),
+          FilledButton(
+            onPressed: () {
+              final value = _parseNumber(controller.text);
+              if (value != null && value >= 0) Navigator.pop(dialogContext, value);
+            },
+            child: const Text('Uygula'),
+          ),
+        ],
+      ),
+    );
+    controller.dispose();
+    return result;
+  }
+
+  Future<void> _bulkAddStock(List<ProductItem> products) async {
+    final active = products.where((p) => p.isActive).toList(growable: false);
+    if (active.isEmpty) return;
+    final quantity = await _askBulkQuantity('${active.length} ürüne stok ekle');
+    if (quantity == null || quantity <= 0) return;
+    try {
+      final repository = ref.read(inventoryRepositoryProvider);
+      final mainWarehouse = await repository.getMainWarehouse();
+      for (final product in active) {
+        await repository.addStock(
+          warehouseId: mainWarehouse.id,
+          productId: product.id,
+          quantity: quantity,
+          notes: 'Ürünler ekranından toplu stok girişi',
+        );
+      }
+      ref.invalidate(productsProvider);
+      ref.invalidate(stockMovementsProvider);
+      ref.invalidate(warehousesProvider);
+      if (mounted) _showMessage('${active.length} ürüne ${_compact(quantity)} stok eklendi.');
+    } catch (error) {
+      if (mounted) _showMessage('Toplu stok eklenemedi: $error');
+    }
+  }
+
+  Future<void> _bulkSetStock(List<ProductItem> products) async {
+    if (products.isEmpty) return;
+    final target = await _askBulkQuantity('${products.length} ürünün stokunu belirle');
+    if (target == null || target < 0) return;
+    await _applyBulkTarget(products, target, 'Toplu stok belirleme');
+  }
+
+  Future<void> _bulkZeroStock(List<ProductItem> products) async {
+    final affected = products.where((p) => p.isActive && p.stockQuantity > 0).toList(growable: false);
+    if (affected.isEmpty) return;
+    final accepted = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: Text('${affected.length} ürünün stokunu sıfırla'),
+        content: const Text('Seçili aktif ürünlerin mevcut stokları 0 yapılacak. Bu işlem stok hareketi olarak kaydedilir.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(dialogContext, false), child: const Text('Vazgeç')),
+          FilledButton(onPressed: () => Navigator.pop(dialogContext, true), child: const Text('Sıfırla')),
+        ],
+      ),
+    );
+    if (accepted == true) await _applyBulkTarget(affected, 0, 'Toplu stok sıfırlama');
+  }
+
+  Future<void> _applyBulkTarget(List<ProductItem> products, double target, String note) async {
+    try {
+      final repository = ref.read(inventoryRepositoryProvider);
+      final mainWarehouse = await repository.getMainWarehouse();
+      var changed = 0;
+      for (final product in products.where((p) => p.isActive)) {
+        final difference = target - product.stockQuantity;
+        if (difference.abs() < 0.0001) continue;
+        if (difference > 0) {
+          await repository.addStock(
+            warehouseId: mainWarehouse.id,
+            productId: product.id,
+            quantity: difference,
+            notes: note,
+          );
+        } else {
+          await repository.removeStock(
+            warehouseId: mainWarehouse.id,
+            productId: product.id,
+            quantity: -difference,
+            reason: 'Sayım / Düzeltme',
+            notes: note,
+          );
+        }
+        changed++;
+      }
+      ref.invalidate(productsProvider);
+      ref.invalidate(stockMovementsProvider);
+      ref.invalidate(warehousesProvider);
+      setState(_selectedIds.clear);
+      if (mounted) _showMessage('$changed ürünün stoğu ${_compact(target)} olarak güncellendi.');
+    } catch (error) {
+      if (mounted) _showMessage('Toplu stok güncellenemedi: $error');
+    }
+  }
+
+  Future<void> _bulkActivate(List<ProductItem> products) async {
+    final passive = products.where((p) => !p.isActive).toList(growable: false);
+    if (passive.isEmpty) return;
+    try {
+      for (final product in passive) {
+        await ref.read(productRepositoryProvider).setProductActive(product.id, true);
+      }
+      setState(_selectedIds.clear);
+      _refresh();
+      if (mounted) _showMessage('${passive.length} ürün aktifleştirildi.');
+    } catch (error) {
+      if (mounted) _showMessage('Ürünler aktifleştirilemedi: $error');
+    }
+  }
+
   Future<void> _showCategoryManager(BuildContext context) async {
     await showDialog<void>(context: context, builder: (_) => const _CategoryManagerDialog());
     _refresh();
@@ -587,8 +725,59 @@ class _ProductManagementScreenState extends ConsumerState<ProductManagementScree
   }
 }
 
-class _DarkMetric extends StatelessWidget {
-  const _DarkMetric({required this.width, required this.title, required this.value, required this.detail, required this.icon, required this.color});
+class _ProductPagination extends StatelessWidget {
+  const _ProductPagination({
+    required this.total,
+    required this.page,
+    required this.pageCount,
+    required this.pageSize,
+    required this.onPage,
+  });
+
+  final int total;
+  final int page;
+  final int pageCount;
+  final int pageSize;
+  final ValueChanged<int> onPage;
+
+  @override
+  Widget build(BuildContext context) {
+    final start = total == 0 ? 0 : page * pageSize + 1;
+    final end = ((page + 1) * pageSize).clamp(0, total);
+    final visiblePages = <int>{0, page - 1, page, page + 1, pageCount - 1}
+        .where((value) => value >= 0 && value < pageCount)
+        .toList()
+      ..sort();
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: const Color(0xFFE1E8F0)),
+      ),
+      child: Row(
+        children: [
+          Expanded(
+            child: Text('$start - $end / $total kayıt gösteriliyor', style: const TextStyle(color: Color(0xFF53657A))),
+          ),
+          IconButton(onPressed: page > 0 ? () => onPage(page - 1) : null, icon: const Icon(Icons.chevron_left)),
+          ...visiblePages.map((index) => Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 2),
+                child: index == page
+                    ? FilledButton(onPressed: () => onPage(index), child: Text('${index + 1}'))
+                    : TextButton(onPressed: () => onPage(index), child: Text('${index + 1}')),
+              )),
+          IconButton(onPressed: page + 1 < pageCount ? () => onPage(page + 1) : null, icon: const Icon(Icons.chevron_right)),
+          const SizedBox(width: 8),
+          Text('$pageSize / sayfa', style: const TextStyle(color: Color(0xFF53657A))),
+        ],
+      ),
+    );
+  }
+}
+
+class _LightMetric extends StatelessWidget {
+  const _LightMetric({required this.width, required this.title, required this.value, required this.detail, required this.icon, required this.color});
   final double width;
   final String title, value, detail;
   final IconData icon;
@@ -615,8 +804,8 @@ class _DarkMetric extends StatelessWidget {
       );
 }
 
-class _DarkProductTable extends StatelessWidget {
-  const _DarkProductTable({
+class _LightProductTable extends StatelessWidget {
+  const _LightProductTable({
     required this.products,
     required this.selectedIds,
     required this.onSelect,
@@ -645,7 +834,7 @@ class _DarkProductTable extends StatelessWidget {
               children: [
                 Container(
                   padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                  color: const Color(0xFF101F2C),
+                  color: const Color(0xFFF7FAFC),
                   child: Row(
                     children: [
                       Checkbox(value: allSelected, onChanged: (v) => onSelectAll(v ?? false)),
@@ -675,7 +864,7 @@ class _DarkProductTable extends StatelessWidget {
             children: [
               Container(
                 padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-                color: const Color(0xFF101F2C),
+                color: const Color(0xFFF7FAFC),
                 child: Row(children: [
                   SizedBox(width: 42, child: Checkbox(value: allSelected, onChanged: (v) => onSelectAll(v ?? false))),
                   const Expanded(flex: 4, child: Text('Ürün', style: TextStyle(fontWeight: FontWeight.w800))),
@@ -689,7 +878,7 @@ class _DarkProductTable extends StatelessWidget {
               ...products.map((product) {
                 final selected = selectedIds.contains(product.id);
                 return Container(
-                  decoration: const BoxDecoration(border: Border(top: BorderSide(color: Color(0xFF223241)))),
+                  decoration: const BoxDecoration(border: Border(top: BorderSide(color: Color(0xFFE5ECF2)))),
                   child: InkWell(
                     onTap: () => onEdit(product),
                     child: Padding(
@@ -697,7 +886,7 @@ class _DarkProductTable extends StatelessWidget {
                       child: Row(children: [
                         SizedBox(width: 42, child: Checkbox(value: selected, onChanged: (v) => onSelect(product, v ?? false))),
                         Expanded(flex: 4, child: Row(children: [
-                          Container(width: 38, height: 38, decoration: BoxDecoration(color: const Color(0xFF12313C), borderRadius: BorderRadius.circular(10)), child: const Icon(Icons.inventory_2_outlined, color: Color(0xFF22D3DC), size: 20)),
+                          Container(width: 38, height: 38, decoration: BoxDecoration(color: const Color(0xFFEAF2FF), borderRadius: BorderRadius.circular(10)), child: const Icon(Icons.inventory_2_outlined, color: Color(0xFF2F80ED), size: 20)),
                           const SizedBox(width: 10),
                           Expanded(child: Text(product.name, style: const TextStyle(fontWeight: FontWeight.w900))),
                         ])),
@@ -766,14 +955,14 @@ class _MobileProductCard extends StatelessWidget {
     return Container(
       width: double.infinity,
       padding: const EdgeInsets.all(12),
-      decoration: const BoxDecoration(border: Border(top: BorderSide(color: Color(0xFF223241)))),
+      decoration: const BoxDecoration(border: Border(top: BorderSide(color: Color(0xFFE5ECF2)))),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Row(
             children: [
               Checkbox(value: selected, onChanged: (v) => onSelect(v ?? false)),
-              Container(width: 40, height: 40, decoration: BoxDecoration(color: const Color(0xFF12313C), borderRadius: BorderRadius.circular(10)), child: const Icon(Icons.inventory_2_outlined, color: Color(0xFF22D3DC), size: 20)),
+              Container(width: 40, height: 40, decoration: BoxDecoration(color: const Color(0xFFEAF2FF), borderRadius: BorderRadius.circular(10)), child: const Icon(Icons.inventory_2_outlined, color: Color(0xFF2F80ED), size: 20)),
               const SizedBox(width: 10),
               Expanded(
                 child: Column(
@@ -831,7 +1020,7 @@ class _ProductInfoChip extends StatelessWidget {
   @override
   Widget build(BuildContext context) => Container(
         padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
-        decoration: BoxDecoration(color: const Color(0xFF101F2C), borderRadius: BorderRadius.circular(9)),
+        decoration: BoxDecoration(color: const Color(0xFFF7FAFC), borderRadius: BorderRadius.circular(9)),
         child: Text('$label: $value', style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w700)),
       );
 }
@@ -857,7 +1046,7 @@ class _EmptyProducts extends StatelessWidget {
         child: Padding(
           padding: EdgeInsets.symmetric(vertical: 70),
           child: Column(children: [
-            Icon(Icons.inventory_2_outlined, size: 50, color: Color(0xFF22D3DC)),
+            Icon(Icons.inventory_2_outlined, size: 50, color: Color(0xFF2F80ED)),
             SizedBox(height: 12),
             Text('Ürün bulunamadı', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w900)),
             SizedBox(height: 4),

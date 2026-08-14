@@ -1995,13 +1995,19 @@ class _DispatchBoardScreenState extends ConsumerState<DispatchBoardScreen> {
                 ),
                 const SizedBox(width: 8),
                 SizedBox(
-                  width: 130,
+                  width: 118,
                   child: DropdownButtonFormField<String>(
                     value: _routeSort,
                     isDense: true,
+                    isExpanded: true,
                     decoration: const InputDecoration(
-                      contentPadding: EdgeInsets.symmetric(horizontal: 10, vertical: 10),
+                      contentPadding: EdgeInsets.symmetric(horizontal: 9, vertical: 10),
                     ),
+                    selectedItemBuilder: (context) => const [
+                      Align(alignment: Alignment.centerLeft, child: Text('Rota Sırası', maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(fontSize: 11))),
+                      Align(alignment: Alignment.centerLeft, child: Text('Müşteri A-Z', maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(fontSize: 11))),
+                      Align(alignment: Alignment.centerLeft, child: Text('İlçe A-Z', maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(fontSize: 11))),
+                    ],
                     items: const [
                       DropdownMenuItem(value: 'route', child: Text('Rota Sırası')),
                       DropdownMenuItem(value: 'customer', child: Text('Müşteri A-Z')),
@@ -2256,14 +2262,22 @@ class _DispatchBoardScreenState extends ConsumerState<DispatchBoardScreen> {
   }
 
   Widget _serviceChip(String text) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-      decoration: BoxDecoration(
-        color: _panel2,
-        borderRadius: BorderRadius.circular(7),
-        border: Border.all(color: _border),
+    return ConstrainedBox(
+      constraints: const BoxConstraints(maxWidth: 148),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 4),
+        decoration: BoxDecoration(
+          color: _panel2,
+          borderRadius: BorderRadius.circular(7),
+          border: Border.all(color: _border),
+        ),
+        child: Text(
+          text,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: const TextStyle(fontSize: 10),
+        ),
       ),
-      child: Text(text, style: const TextStyle(fontSize: 11)),
     );
   }
 

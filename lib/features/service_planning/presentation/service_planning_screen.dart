@@ -21,8 +21,11 @@ class ServicePlanningScreen extends ConsumerStatefulWidget {
 
 class _ServicePlanningScreenState extends ConsumerState<ServicePlanningScreen> {
   DateTime _anchor = DateTime.now();
-  _CalendarMode _mode = _CalendarMode.week;
-  String _technician = 'Tümü';
+  _CalendarMode _mode = _CalendarMode.day;
+  String _technicianFilter = 'Tümü';
+  String? _selectedTechnician;
+  String _technicianSearch = '';
+  bool _showAllTechnicians = false;
   late Future<List<ServiceRequestModel>> _future;
 
   @override
@@ -43,14 +46,40 @@ class _ServicePlanningScreenState extends ConsumerState<ServicePlanningScreen> {
     return day.subtract(Duration(days: day.weekday - DateTime.monday));
   }
 
+  bool _sameDay(DateTime a, DateTime b) =>
+      a.year == b.year && a.month == b.month && a.day == b.day;
+
+  bool _inCurrentPeriod(DateTime value) {
+    final local = value.toLocal();
+    switch (_mode) {
+      case _CalendarMode.day:
+        return _sameDay(local, _anchor);
+      case _CalendarMode.week:
+        final start = _weekStart(_anchor);
+        final end = start.add(const Duration(days: 7));
+        return !local.isBefore(start) && local.isBefore(end);
+      case _CalendarMode.month:
+        return local.year == _anchor.year && local.month == _anchor.month;
+      case _CalendarMode.list:
+        return true;
+    }
+  }
+
   void _move(int direction) {
     setState(() {
-      if (_mode == _CalendarMode.day) {
-        _anchor = _anchor.add(Duration(days: direction));
-      } else if (_mode == _CalendarMode.month) {
-        _anchor = DateTime(_anchor.year, _anchor.month + direction, 1);
-      } else {
-        _anchor = _anchor.add(Duration(days: 7 * direction));
+      switch (_mode) {
+        case _CalendarMode.day:
+          _anchor = _anchor.add(Duration(days: direction));
+          break;
+        case _CalendarMode.week:
+          _anchor = _anchor.add(Duration(days: 7 * direction));
+          break;
+        case _CalendarMode.month:
+          _anchor = DateTime(_anchor.year, _anchor.month + direction, 1);
+          break;
+        case _CalendarMode.list:
+          _anchor = _anchor.add(Duration(days: direction));
+          break;
       }
     });
   }
@@ -62,118 +91,6 @@ class _ServicePlanningScreenState extends ConsumerState<ServicePlanningScreen> {
   Widget build(BuildContext context) {
     final auth = ref.watch(authControllerProvider);
     final role = auth.role ?? AppRole.manager;
-    final desktop = MediaQuery.sizeOf(context).width >= 1050;
-
-    final body = Container(
-      color: const Color(0xFFF4F7FA),
-      child: FutureBuilder<List<ServiceRequestModel>>(
-        future: _future,
-        builder: (context, snapshot) {
-          if (snapshot.connectionState == ConnectionState.waiting) {
-            return const Center(child: CircularProgressIndicator());
-          }
-          if (snapshot.hasError) {
-            return _ErrorState(
-              message: 'Takvim yüklenemedi: ${snapshot.error}',
-              onRetry: () => setState(_reload),
-            );
-          }
-
-          final all = (snapshot.data ?? const <ServiceRequestModel>[])
-              .where((item) => item.plannedDate != null &&
-                  item.status != ServiceRequestStatus.pending &&
-                  item.status != ServiceRequestStatus.deferred &&
-                  item.status != ServiceRequestStatus.cancelled &&
-                  item.status != ServiceRequestStatus.couldNotComplete)
-              .toList()
-            ..sort((a, b) => a.plannedDate!.compareTo(b.plannedDate!));
-          final technicians = all
-              .map((item) => item.assignedTechnicianName.trim())
-              .where((name) => name.isNotEmpty)
-              .toSet()
-              .toList()
-            ..sort();
-          final filtered = _technician == 'Tümü'
-              ? all
-              : all
-                  .where((item) =>
-                      item.assignedTechnicianName.trim() == _technician)
-                  .toList();
-
-          return Column(
-            children: [
-              Expanded(
-                child: SingleChildScrollView(
-                  padding: const EdgeInsets.fromLTRB(22, 18, 22, 28),
-                  child: Column(
-                    children: [
-                      _SummaryCards(items: all),
-                      const SizedBox(height: 16),
-                      _CalendarToolbar(
-                        anchor: _anchor,
-                        mode: _mode,
-                        technician: _technician,
-                        technicians: technicians,
-                        onTechnicianChanged: (value) {
-                          setState(() => _technician = value ?? 'Tümü');
-                        },
-                        onModeChanged: (value) => setState(() => _mode = value),
-                        onPrevious: () => _move(-1),
-                        onNext: () => _move(1),
-                        onToday: () => setState(() => _anchor = DateTime.now()),
-                        onPickDate: () async {
-                          final picked = await showDatePicker(
-                            context: context,
-                            initialDate: _anchor,
-                            firstDate: DateTime(2020),
-                            lastDate: DateTime(2100),
-                            locale: const Locale('tr', 'TR'),
-                          );
-                          if (picked != null) setState(() => _anchor = picked);
-                        },
-                      ),
-                      const SizedBox(height: 12),
-                      _Legend(),
-                      const SizedBox(height: 12),
-                      if (!desktop || _mode == _CalendarMode.list)
-                        _ListCalendar(
-                          items: filtered,
-                          anchor: _anchor,
-                          mode: _mode,
-                          onOpen: () => context.go('${_routePrefix(role)}/service-requests'),
-                        )
-                      else if (_mode == _CalendarMode.day)
-                        _DayCalendar(
-                          items: filtered,
-                          day: _dateOnly(_anchor),
-                          onOpen: () => context.go('${_routePrefix(role)}/service-requests'),
-                        )
-                      else if (_mode == _CalendarMode.month)
-                        _MonthCalendar(
-                          items: filtered,
-                          month: _anchor,
-                          onSelectDay: (date) => setState(() {
-                            _anchor = date;
-                            _mode = _CalendarMode.day;
-                          }),
-                        )
-                      else
-                        _WeekCalendar(
-                          items: filtered,
-                          weekStart: _weekStart(_anchor),
-                          onOpen: () => context.go('${_routePrefix(role)}/service-requests'),
-                        ),
-                      const SizedBox(height: 16),
-                      _TechnicianStrip(items: all),
-                    ],
-                  ),
-                ),
-              ),
-            ],
-          );
-        },
-      ),
-    );
 
     return ManagementShell(
       role: role,
@@ -182,79 +99,225 @@ class _ServicePlanningScreenState extends ConsumerState<ServicePlanningScreen> {
       actions: [
         FilledButton.icon(
           onPressed: () => context.go('${_routePrefix(role)}/customers'),
-          icon: const Icon(Icons.add),
+          icon: const Icon(Icons.add_rounded),
           label: const Text('Yeni Servis Talebi'),
+          style: FilledButton.styleFrom(
+            backgroundColor: const Color(0xFF08A9B7),
+            foregroundColor: Colors.white,
+          ),
         ),
-        IconButton(
+        IconButton.outlined(
           tooltip: 'Yenile',
           onPressed: () => setState(_reload),
           icon: const Icon(Icons.refresh_rounded),
         ),
+        OutlinedButton.icon(
+          onPressed: _showHelp,
+          icon: const Icon(Icons.help_outline_rounded),
+          label: const Text('Yardım'),
+        ),
       ],
-      child: body,
+      child: ColoredBox(
+        color: const Color(0xFFF4F7FA),
+        child: FutureBuilder<List<ServiceRequestModel>>(
+          future: _future,
+          builder: (context, snapshot) {
+            if (snapshot.connectionState == ConnectionState.waiting) {
+              return const Center(child: CircularProgressIndicator());
+            }
+            if (snapshot.hasError) {
+              return _ErrorState(
+                message: 'Takvim yüklenemedi: ${snapshot.error}',
+                onRetry: () => setState(_reload),
+              );
+            }
+
+            final all = (snapshot.data ?? const <ServiceRequestModel>[])
+                .where((item) => item.plannedDate != null)
+                .toList()
+              ..sort((a, b) => a.plannedDate!.compareTo(b.plannedDate!));
+
+            final technicians = all
+                .map((e) => e.assignedTechnicianName.trim())
+                .where((e) => e.isNotEmpty)
+                .toSet()
+                .toList()
+              ..sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
+
+            final periodItems = all.where((e) => _inCurrentPeriod(e.plannedDate!)).toList();
+            final filteredPeriodItems = _technicianFilter == 'Tümü'
+                ? periodItems
+                : periodItems
+                    .where((e) => e.assignedTechnicianName.trim() == _technicianFilter)
+                    .toList();
+
+            if (_selectedTechnician != null &&
+                !technicians.contains(_selectedTechnician)) {
+              _selectedTechnician = null;
+            }
+
+            final selectedName = _selectedTechnician ??
+                (_technicianFilter != 'Tümü'
+                    ? _technicianFilter
+                    : (technicians.isNotEmpty ? technicians.first : null));
+
+            final selectedItems = selectedName == null
+                ? filteredPeriodItems
+                : filteredPeriodItems
+                    .where((e) => e.assignedTechnicianName.trim() == selectedName)
+                    .toList();
+
+            return LayoutBuilder(
+              builder: (context, constraints) {
+                final horizontal = constraints.maxWidth >= 1080;
+                return SingleChildScrollView(
+                  padding: EdgeInsets.fromLTRB(
+                    constraints.maxWidth < 760 ? 12 : 22,
+                    18,
+                    constraints.maxWidth < 760 ? 12 : 22,
+                    28,
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      _SummaryCards(items: all),
+                      const SizedBox(height: 16),
+                      _CalendarToolbar(
+                        anchor: _anchor,
+                        mode: _mode,
+                        technician: _technicianFilter,
+                        technicians: technicians,
+                        onTechnicianChanged: (value) {
+                          setState(() {
+                            _technicianFilter = value ?? 'Tümü';
+                            if (_technicianFilter != 'Tümü') {
+                              _selectedTechnician = _technicianFilter;
+                            }
+                          });
+                        },
+                        onModeChanged: (value) => setState(() => _mode = value),
+                        onPrevious: () => _move(-1),
+                        onNext: () => _move(1),
+                        onToday: () => setState(() => _anchor = DateTime.now()),
+                        onPickDate: _pickDate,
+                        onFilter: () => _showFilterInfo(context),
+                      ),
+                      const SizedBox(height: 10),
+                      const _Legend(),
+                      const SizedBox(height: 12),
+                      if (horizontal)
+                        SizedBox(
+                          height: 535,
+                          child: Row(
+                            crossAxisAlignment: CrossAxisAlignment.stretch,
+                            children: [
+                              SizedBox(
+                                width: 330,
+                                child: _TechnicianPanel(
+                                  technicians: technicians,
+                                  items: periodItems,
+                                  selected: selectedName,
+                                  search: _technicianSearch,
+                                  showAll: _showAllTechnicians,
+                                  onSearchChanged: (value) =>
+                                      setState(() => _technicianSearch = value),
+                                  onSelect: (name) => setState(() {
+                                    _selectedTechnician = name;
+                                    _technicianFilter = name;
+                                  }),
+                                  onToggleAll: () => setState(() =>
+                                      _showAllTechnicians = !_showAllTechnicians),
+                                ),
+                              ),
+                              const SizedBox(width: 14),
+                              Expanded(
+                                child: _SchedulePanel(
+                                  technicianName: selectedName,
+                                  items: selectedItems,
+                                  mode: _mode,
+                                  anchor: _anchor,
+                                  onOpenRequests: () => context.go(
+                                      '${_routePrefix(role)}/service-requests'),
+                                  onNewJob: () => context.go(
+                                      '${_routePrefix(role)}/customers'),
+                                ),
+                              ),
+                            ],
+                          ),
+                        )
+                      else ...[
+                        _TechnicianPanel(
+                          technicians: technicians,
+                          items: periodItems,
+                          selected: selectedName,
+                          search: _technicianSearch,
+                          showAll: _showAllTechnicians,
+                          onSearchChanged: (value) =>
+                              setState(() => _technicianSearch = value),
+                          onSelect: (name) => setState(() {
+                            _selectedTechnician = name;
+                            _technicianFilter = name;
+                          }),
+                          onToggleAll: () => setState(() =>
+                              _showAllTechnicians = !_showAllTechnicians),
+                        ),
+                        const SizedBox(height: 14),
+                        _SchedulePanel(
+                          technicianName: selectedName,
+                          items: selectedItems,
+                          mode: _mode,
+                          anchor: _anchor,
+                          onOpenRequests: () => context.go(
+                              '${_routePrefix(role)}/service-requests'),
+                          onNewJob: () =>
+                              context.go('${_routePrefix(role)}/customers'),
+                        ),
+                      ],
+                    ],
+                  ),
+                );
+              },
+            );
+          },
+        ),
+      ),
     );
   }
-}
 
-class _TopBar extends StatelessWidget {
-  const _TopBar({
-    required this.role,
-    required this.onNewRequest,
-    required this.onRefresh,
-  });
+  Future<void> _pickDate() async {
+    final picked = await showDatePicker(
+      context: context,
+      initialDate: _anchor,
+      firstDate: DateTime(2020),
+      lastDate: DateTime(2100),
+      locale: const Locale('tr', 'TR'),
+    );
+    if (picked != null && mounted) setState(() => _anchor = picked);
+  }
 
-  final AppRole role;
-  final VoidCallback onNewRequest;
-  final VoidCallback onRefresh;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      height: 82,
-      padding: const EdgeInsets.symmetric(horizontal: 24),
-      decoration: const BoxDecoration(
-        color: Colors.white,
-        border: Border(bottom: BorderSide(color: Color(0xFFE3EAF0))),
-      ),
-      child: Row(
-        children: [
-          const Icon(Icons.calendar_month_outlined,
-              size: 28, color: Color(0xFF0EA7B5)),
-          const SizedBox(width: 12),
-          const Expanded(
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text('Takvim',
-                    style: TextStyle(
-                        fontSize: 24,
-                        fontWeight: FontWeight.w900,
-                        color: Color(0xFF102033))),
-                SizedBox(height: 3),
-                Text('Teknisyenlerin günlük ve haftalık iş programını görüntüleyin.',
-                    style: TextStyle(color: Color(0xFF718096), fontSize: 13)),
-              ],
-            ),
-          ),
-          if (role != AppRole.technician)
-            FilledButton.icon(
-              onPressed: onNewRequest,
-              icon: const Icon(Icons.add),
-              label: const Text('Yeni Servis Talebi'),
-              style: FilledButton.styleFrom(
-                backgroundColor: const Color(0xFF08A9B7),
-                padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 16),
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(11)),
-              ),
-            ),
-          const SizedBox(width: 10),
-          IconButton.filledTonal(
-            onPressed: onRefresh,
-            icon: const Icon(Icons.refresh),
-            tooltip: 'Yenile',
+  void _showHelp() {
+    showDialog<void>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Takvim Kullanımı'),
+        content: const Text(
+          'Teknisyeni soldan seçebilir, Gün / Hafta / Ay / Liste görünümünü değiştirebilir ve tarih seçerek o dönemin işlerini görüntüleyebilirsiniz.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Tamam'),
           ),
         ],
+      ),
+    );
+  }
+
+  void _showFilterInfo(BuildContext context) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('Teknisyen, görünüm ve tarih seçimleri anında uygulanır.'),
+        duration: Duration(seconds: 2),
       ),
     );
   }
@@ -262,26 +325,28 @@ class _TopBar extends StatelessWidget {
 
 class _SummaryCards extends StatelessWidget {
   const _SummaryCards({required this.items});
-
   final List<ServiceRequestModel> items;
 
   @override
   Widget build(BuildContext context) {
     final today = DateTime.now();
+    final todayOnly = DateTime(today.year, today.month, today.day);
     final todayItems = items.where((item) {
       final date = item.plannedDate!.toLocal();
       return date.year == today.year &&
           date.month == today.month &&
           date.day == today.day;
     }).toList();
+
     int count(ServiceRequestStatus status) =>
         todayItems.where((item) => item.status == status).length;
+
     final technicians = todayItems
         .map((e) => e.assignedTechnicianName.trim())
         .where((e) => e.isNotEmpty)
         .toSet()
         .length;
-    final todayOnly = DateTime(today.year, today.month, today.day);
+
     final delayed = items.where((item) {
       final planned = item.plannedDate!.toLocal();
       final plannedOnly = DateTime(planned.year, planned.month, planned.day);
@@ -291,29 +356,58 @@ class _SummaryCards extends StatelessWidget {
     }).length;
 
     final cards = [
-      _MetricData('Bugünkü Servisler', '${todayItems.length}', 'Tüm teknisyenler',
-          Icons.calendar_today_outlined, const Color(0xFF2F80ED)),
-      _MetricData('Tamamlanan', '${count(ServiceRequestStatus.completed)}', 'Bugün',
-          Icons.check_circle_outline, const Color(0xFF20A66A)),
-      _MetricData('Devam Eden', '${count(ServiceRequestStatus.inProgress)}',
-          'Şu anda işlemde', Icons.timelapse, const Color(0xFFF59E0B)),
-      _MetricData('Teknisyen', '$technicians', 'Bugün görevli',
-          Icons.person_outline, const Color(0xFF7C3AED)),
-      _MetricData('Geciken', '$delayed', 'Plan tarihi geçen',
-          Icons.warning_amber_rounded, const Color(0xFFE34D59)),
+      _MetricData(
+        'Bugünkü Servisler',
+        '${todayItems.length}',
+        'Tüm teknisyenler',
+        Icons.calendar_today_outlined,
+        const Color(0xFF2F80ED),
+      ),
+      _MetricData(
+        'Tamamlanan',
+        '${count(ServiceRequestStatus.completed)}',
+        'Bugün',
+        Icons.check_circle_outline_rounded,
+        const Color(0xFF20A66A),
+      ),
+      _MetricData(
+        'Devam Eden',
+        '${count(ServiceRequestStatus.inProgress)}',
+        'Şu anda',
+        Icons.schedule_rounded,
+        const Color(0xFFF59E0B),
+      ),
+      _MetricData(
+        'Teknisyen',
+        '$technicians',
+        'Bugün görevli',
+        Icons.person_outline_rounded,
+        const Color(0xFF7C3AED),
+      ),
+      _MetricData(
+        'Geciken',
+        '$delayed',
+        'Plan tarihi geçen',
+        Icons.warning_amber_rounded,
+        const Color(0xFFE34D59),
+      ),
     ];
 
     return LayoutBuilder(
       builder: (context, constraints) {
-        final count = constraints.maxWidth > 1150 ? 5 : constraints.maxWidth > 720 ? 3 : 2;
+        final columns = constraints.maxWidth >= 1180
+            ? 5
+            : constraints.maxWidth >= 760
+                ? 3
+                : 2;
         return GridView.builder(
           shrinkWrap: true,
           physics: const NeverScrollableScrollPhysics(),
           gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-            crossAxisCount: count,
+            crossAxisCount: columns,
             crossAxisSpacing: 12,
             mainAxisSpacing: 12,
-            childAspectRatio: 2.25,
+            childAspectRatio: columns == 5 ? 2.3 : 2.15,
           ),
           itemCount: cards.length,
           itemBuilder: (context, index) => _MetricCard(data: cards[index]),
@@ -340,12 +434,7 @@ class _MetricCard extends StatelessWidget {
   Widget build(BuildContext context) {
     return Container(
       padding: const EdgeInsets.all(15),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: const Color(0xFFE3EAF0)),
-        boxShadow: const [BoxShadow(color: Color(0x0C0B2438), blurRadius: 16, offset: Offset(0, 5))],
-      ),
+      decoration: _panelDecoration(),
       child: Row(
         children: [
           Container(
@@ -363,16 +452,34 @@ class _MetricCard extends StatelessWidget {
               mainAxisAlignment: MainAxisAlignment.center,
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(data.label,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(color: Color(0xFF526175), fontSize: 12, fontWeight: FontWeight.w600)),
-                Text(data.value,
-                    style: const TextStyle(fontSize: 23, fontWeight: FontWeight.w900, color: Color(0xFF102033))),
-                Text(data.detail,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(color: Color(0xFF8491A3), fontSize: 11)),
+                Text(
+                  data.label,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    color: Color(0xFF526175),
+                    fontSize: 12,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  data.value,
+                  style: const TextStyle(
+                    fontSize: 23,
+                    fontWeight: FontWeight.w900,
+                    color: Color(0xFF102033),
+                  ),
+                ),
+                Text(
+                  data.detail,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    color: Color(0xFF8491A3),
+                    fontSize: 11,
+                  ),
+                ),
               ],
             ),
           ),
@@ -394,6 +501,7 @@ class _CalendarToolbar extends StatelessWidget {
     required this.onNext,
     required this.onToday,
     required this.onPickDate,
+    required this.onFilter,
   });
 
   final DateTime anchor;
@@ -406,232 +514,195 @@ class _CalendarToolbar extends StatelessWidget {
   final VoidCallback onNext;
   final VoidCallback onToday;
   final VoidCallback onPickDate;
+  final VoidCallback onFilter;
 
-  @override
-  Widget build(BuildContext context) {
-    final start = anchor.subtract(Duration(days: anchor.weekday - 1));
-    final end = start.add(const Duration(days: 6));
-    final range = mode == _CalendarMode.month
-        ? DateFormat('MMMM yyyy', 'tr_TR').format(anchor)
-        : mode == _CalendarMode.day
-            ? DateFormat('dd MMMM yyyy', 'tr_TR').format(anchor)
-            : '${DateFormat('dd MMM', 'tr_TR').format(start)} - ${DateFormat('dd MMM yyyy', 'tr_TR').format(end)}';
-
-    return Container(
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: const Color(0xFFE3EAF0)),
-      ),
-      child: Wrap(
-        spacing: 10,
-        runSpacing: 10,
-        crossAxisAlignment: WrapCrossAlignment.center,
-        children: [
-          SizedBox(
-            width: 230,
-            child: DropdownButtonFormField<String>(
-              value: technician,
-              decoration: _inputDecoration('Teknisyen', Icons.people_outline),
-              items: ['Tümü', ...technicians]
-                  .map((name) => DropdownMenuItem(value: name, child: Text(name == 'Tümü' ? 'Tüm Teknisyenler' : name)))
-                  .toList(),
-              onChanged: onTechnicianChanged,
-            ),
-          ),
-          SegmentedButton<_CalendarMode>(
-            segments: const [
-              ButtonSegment(value: _CalendarMode.day, label: Text('Gün')),
-              ButtonSegment(value: _CalendarMode.week, label: Text('Hafta')),
-              ButtonSegment(value: _CalendarMode.month, label: Text('Ay')),
-              ButtonSegment(value: _CalendarMode.list, label: Text('Liste')),
-            ],
-            selected: {mode},
-            onSelectionChanged: (set) => onModeChanged(set.first),
-            style: ButtonStyle(
-              visualDensity: VisualDensity.compact,
-              shape: WidgetStatePropertyAll(RoundedRectangleBorder(borderRadius: BorderRadius.circular(9))),
-            ),
-          ),
-          const SizedBox(width: 4),
-          OutlinedButton(onPressed: onToday, child: const Text('Bugün')),
-          IconButton.outlined(onPressed: onPrevious, icon: const Icon(Icons.chevron_left)),
-          InkWell(
-            onTap: onPickDate,
-            borderRadius: BorderRadius.circular(9),
-            child: Container(
-              constraints: const BoxConstraints(minWidth: 190),
-              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
-              decoration: BoxDecoration(
-                borderRadius: BorderRadius.circular(9),
-                border: Border.all(color: const Color(0xFFD8E2EA)),
-              ),
-              child: Row(mainAxisSize: MainAxisSize.min, children: [
-                const Icon(Icons.calendar_month_outlined, size: 19, color: Color(0xFF0B91A0)),
-                const SizedBox(width: 9),
-                Text(range, style: const TextStyle(fontWeight: FontWeight.w700, color: Color(0xFF344257))),
-              ]),
-            ),
-          ),
-          IconButton.outlined(onPressed: onNext, icon: const Icon(Icons.chevron_right)),
-        ],
-      ),
-    );
+  String get _dateLabel {
+    if (mode == _CalendarMode.week) {
+      final start = anchor.subtract(Duration(days: anchor.weekday - 1));
+      final end = start.add(const Duration(days: 6));
+      return '${DateFormat('dd MMM', 'tr_TR').format(start)} - ${DateFormat('dd MMM yyyy', 'tr_TR').format(end)}';
+    }
+    if (mode == _CalendarMode.month) {
+      return DateFormat('MMMM yyyy', 'tr_TR').format(anchor);
+    }
+    return DateFormat('dd MMMM yyyy', 'tr_TR').format(anchor);
   }
-}
-
-InputDecoration _inputDecoration(String label, IconData icon) {
-  return InputDecoration(
-    labelText: label,
-    prefixIcon: Icon(icon, size: 20),
-    filled: true,
-    fillColor: Colors.white,
-    isDense: true,
-    border: OutlineInputBorder(borderRadius: BorderRadius.circular(9), borderSide: const BorderSide(color: Color(0xFFD8E2EA))),
-    enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(9), borderSide: const BorderSide(color: Color(0xFFD8E2EA))),
-  );
-}
-
-class _Legend extends StatelessWidget {
-  @override
-  Widget build(BuildContext context) {
-    return Align(
-      alignment: Alignment.centerRight,
-      child: Wrap(
-        spacing: 8,
-        runSpacing: 8,
-        children: const [
-          _LegendChip('Planlandı', Color(0xFF2F80ED)),
-          _LegendChip('Devam Ediyor', Color(0xFF7C3AED)),
-          _LegendChip('Tamamlandı', Color(0xFF20A66A)),
-          _LegendChip('İptal', Color(0xFFE34D59)),
-          _LegendChip('Atama Bekliyor', Color(0xFFF59E0B)),
-        ],
-      ),
-    );
-  }
-}
-
-class _LegendChip extends StatelessWidget {
-  const _LegendChip(this.label, this.color);
-  final String label;
-  final Color color;
 
   @override
   Widget build(BuildContext context) {
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-      decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(20), border: Border.all(color: const Color(0xFFE3EAF0))),
-      child: Row(mainAxisSize: MainAxisSize.min, children: [
-        Container(width: 8, height: 8, decoration: BoxDecoration(color: color, shape: BoxShape.circle)),
-        const SizedBox(width: 7),
-        Text(label, style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: Color(0xFF536174))),
-      ]),
-    );
-  }
-}
-
-class _WeekCalendar extends StatelessWidget {
-  const _WeekCalendar({required this.items, required this.weekStart, required this.onOpen});
-  final List<ServiceRequestModel> items;
-  final DateTime weekStart;
-  final VoidCallback onOpen;
-
-  @override
-  Widget build(BuildContext context) {
-    final days = List.generate(7, (index) => weekStart.add(Duration(days: index)));
-    final today = DateTime.now();
-
-    return Container(
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: const Color(0xFFE3EAF0)),
-      ),
-      clipBehavior: Clip.antiAlias,
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
+      decoration: _panelDecoration(shadow: false),
       child: LayoutBuilder(
         builder: (context, constraints) {
-          return SingleChildScrollView(
-            scrollDirection: Axis.horizontal,
-            child: SizedBox(
-              width: constraints.maxWidth < 1120 ? 1120 : constraints.maxWidth,
-              child: Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: days.map((day) {
-                  final selected = day.year == today.year &&
-                      day.month == today.month &&
-                      day.day == today.day;
-                  final dayItems = items.where((item) {
-                    final value = item.plannedDate!.toLocal();
-                    return value.year == day.year &&
-                        value.month == day.month &&
-                        value.day == day.day;
-                  }).toList();
-
-                  return Expanded(
-                    child: Container(
-                      constraints: const BoxConstraints(minHeight: 360),
-                      decoration: const BoxDecoration(
-                        border: Border(left: BorderSide(color: Color(0xFFE5EBF0))),
-                      ),
-                      child: Column(
-                        children: [
-                          Container(
-                            height: 66,
-                            width: double.infinity,
-                            alignment: Alignment.center,
-                            color: selected ? const Color(0xFFEAF9FA) : Colors.white,
-                            child: Column(
-                              mainAxisAlignment: MainAxisAlignment.center,
-                              children: [
-                                Text(
-                                  DateFormat('EEE', 'tr_TR').format(day),
-                                  style: TextStyle(
-                                    fontSize: 12,
-                                    fontWeight: FontWeight.w900,
-                                    color: selected ? const Color(0xFF0798A7) : const Color(0xFF344257),
-                                  ),
-                                ),
-                                const SizedBox(height: 3),
-                                Text(
-                                  DateFormat('dd MMMM', 'tr_TR').format(day),
-                                  style: const TextStyle(fontSize: 11, color: Color(0xFF7E8A9A)),
-                                ),
-                              ],
-                            ),
+          final compact = constraints.maxWidth < 980;
+          final technicianField = SizedBox(
+            width: compact ? double.infinity : 245,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const _FieldLabel('Teknisyen'),
+                const SizedBox(height: 5),
+                DropdownButtonFormField<String>(
+                  value: technician,
+                  isExpanded: true,
+                  decoration: _controlDecoration(Icons.people_outline_rounded),
+                  items: ['Tümü', ...technicians]
+                      .map(
+                        (name) => DropdownMenuItem(
+                          value: name,
+                          child: Text(
+                            name == 'Tümü' ? 'Tüm Teknisyenler' : name,
+                            overflow: TextOverflow.ellipsis,
                           ),
-                          Padding(
-                            padding: const EdgeInsets.all(8),
-                            child: dayItems.isEmpty
-                                ? Container(
-                                    height: 84,
-                                    alignment: Alignment.center,
-                                    child: const Text(
-                                      'Servis yok',
-                                      style: TextStyle(fontSize: 11, color: Color(0xFFA0AAB7)),
-                                    ),
-                                  )
-                                : Column(
-                                    children: dayItems
-                                        .map((item) => Padding(
-                                              padding: const EdgeInsets.only(bottom: 8),
-                                              child: _CalendarEventCard(
-                                                item: item,
-                                                onTap: onOpen,
-                                                compact: true,
-                                              ),
-                                            ))
-                                        .toList(),
-                                  ),
+                        ),
+                      )
+                      .toList(),
+                  onChanged: onTechnicianChanged,
+                ),
+              ],
+            ),
+          );
+
+          final viewControl = Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const _FieldLabel('Görünüm'),
+              const SizedBox(height: 5),
+              SegmentedButton<_CalendarMode>(
+                segments: const [
+                  ButtonSegment(value: _CalendarMode.day, label: Text('Gün')),
+                  ButtonSegment(value: _CalendarMode.week, label: Text('Hafta')),
+                  ButtonSegment(value: _CalendarMode.month, label: Text('Ay')),
+                  ButtonSegment(value: _CalendarMode.list, label: Text('Liste')),
+                ],
+                selected: {mode},
+                onSelectionChanged: (set) => onModeChanged(set.first),
+                showSelectedIcon: false,
+                style: ButtonStyle(
+                  visualDensity: VisualDensity.compact,
+                  padding: const WidgetStatePropertyAll(
+                    EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                  ),
+                  shape: WidgetStatePropertyAll(
+                    RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                  ),
+                ),
+              ),
+            ],
+          );
+
+          final dateControl = Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const _FieldLabel('Tarih'),
+              const SizedBox(height: 5),
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  InkWell(
+                    onTap: onPickDate,
+                    borderRadius: BorderRadius.circular(9),
+                    child: Container(
+                      constraints: const BoxConstraints(minWidth: 205),
+                      padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 12),
+                      decoration: BoxDecoration(
+                        color: Colors.white,
+                        borderRadius: BorderRadius.circular(9),
+                        border: Border.all(color: const Color(0xFFD8E2EA)),
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const Icon(
+                            Icons.calendar_month_outlined,
+                            size: 19,
+                            color: Color(0xFF23334A),
+                          ),
+                          const SizedBox(width: 9),
+                          Flexible(
+                            child: Text(
+                              _dateLabel,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(
+                                fontWeight: FontWeight.w700,
+                                color: Color(0xFF344257),
+                              ),
+                            ),
                           ),
                         ],
                       ),
                     ),
-                  );
-                }).toList(),
+                  ),
+                  const SizedBox(width: 8),
+                  IconButton.outlined(
+                    onPressed: onPrevious,
+                    icon: const Icon(Icons.chevron_left_rounded),
+                  ),
+                  const SizedBox(width: 5),
+                  IconButton.outlined(
+                    onPressed: onNext,
+                    icon: const Icon(Icons.chevron_right_rounded),
+                  ),
+                  const SizedBox(width: 8),
+                  OutlinedButton(
+                    onPressed: onToday,
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: const Color(0xFF08A9B7),
+                      side: const BorderSide(color: Color(0xFF08A9B7)),
+                      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 15),
+                    ),
+                    child: const Text('Bugün'),
+                  ),
+                ],
               ),
-            ),
+            ],
+          );
+
+          final trailing = Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              OutlinedButton.icon(
+                onPressed: onFilter,
+                icon: const Icon(Icons.filter_alt_outlined),
+                label: const Text('Filtrele'),
+                style: OutlinedButton.styleFrom(
+                  padding: const EdgeInsets.symmetric(horizontal: 17, vertical: 15),
+                ),
+              ),
+              const SizedBox(width: 8),
+              IconButton.outlined(
+                onPressed: onFilter,
+                icon: const Icon(Icons.more_vert_rounded),
+              ),
+            ],
+          );
+
+          if (compact) {
+            return Wrap(
+              spacing: 12,
+              runSpacing: 12,
+              crossAxisAlignment: WrapCrossAlignment.end,
+              children: [
+                SizedBox(width: 245, child: technicianField),
+                viewControl,
+                dateControl,
+                trailing,
+              ],
+            );
+          }
+
+          return Row(
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: [
+              technicianField,
+              const SizedBox(width: 22),
+              viewControl,
+              const SizedBox(width: 28),
+              Expanded(child: dateControl),
+              trailing,
+            ],
           );
         },
       ),
@@ -639,85 +710,340 @@ class _WeekCalendar extends StatelessWidget {
   }
 }
 
-class _DayCalendar extends StatelessWidget {
-  const _DayCalendar({required this.items, required this.day, required this.onOpen});
-  final List<ServiceRequestModel> items;
-  final DateTime day;
-  final VoidCallback onOpen;
+class _FieldLabel extends StatelessWidget {
+  const _FieldLabel(this.text);
+  final String text;
 
   @override
   Widget build(BuildContext context) {
-    final dayItems = items.where((item) {
-      final date = item.plannedDate!.toLocal();
-      return date.year == day.year && date.month == day.month && date.day == day.day;
-    }).toList();
-    return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(14), border: Border.all(color: const Color(0xFFE3EAF0))),
-      child: dayItems.isEmpty
-          ? const _EmptyCalendar(message: 'Bu tarih için planlanmış servis bulunmuyor.')
-          : Column(
-              children: dayItems.map((item) => Padding(padding: const EdgeInsets.only(bottom: 10), child: _CalendarEventCard(item: item, onTap: onOpen))).toList(),
-            ),
+    return Text(
+      text,
+      style: const TextStyle(
+        color: Color(0xFF526175),
+        fontSize: 12,
+        fontWeight: FontWeight.w700,
+      ),
     );
   }
 }
 
-class _MonthCalendar extends StatelessWidget {
-  const _MonthCalendar({required this.items, required this.month, required this.onSelectDay});
-  final List<ServiceRequestModel> items;
-  final DateTime month;
-  final ValueChanged<DateTime> onSelectDay;
+InputDecoration _controlDecoration(IconData icon) {
+  return InputDecoration(
+    prefixIcon: Icon(icon, size: 19),
+    filled: true,
+    fillColor: Colors.white,
+    isDense: true,
+    contentPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 12),
+    border: OutlineInputBorder(
+      borderRadius: BorderRadius.circular(9),
+      borderSide: const BorderSide(color: Color(0xFFD8E2EA)),
+    ),
+    enabledBorder: OutlineInputBorder(
+      borderRadius: BorderRadius.circular(9),
+      borderSide: const BorderSide(color: Color(0xFFD8E2EA)),
+    ),
+  );
+}
+
+class _Legend extends StatelessWidget {
+  const _Legend();
 
   @override
   Widget build(BuildContext context) {
-    final first = DateTime(month.year, month.month, 1);
-    final offset = first.weekday - 1;
-    final gridStart = first.subtract(Duration(days: offset));
-    final days = List.generate(42, (index) => gridStart.add(Duration(days: index)));
-    return Container(
-      padding: const EdgeInsets.all(10),
-      decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(14), border: Border.all(color: const Color(0xFFE3EAF0))),
-      child: Column(
+    return const Align(
+      alignment: Alignment.centerRight,
+      child: Wrap(
+        spacing: 14,
+        runSpacing: 7,
         children: [
-          Row(children: ['Pzt', 'Sal', 'Çar', 'Per', 'Cum', 'Cmt', 'Paz'].map((name) => Expanded(child: Padding(padding: const EdgeInsets.all(9), child: Center(child: Text(name, style: const TextStyle(fontWeight: FontWeight.w800, color: Color(0xFF536174))))))).toList()),
-          GridView.builder(
-            shrinkWrap: true,
-            physics: const NeverScrollableScrollPhysics(),
-            gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(crossAxisCount: 7, childAspectRatio: 1.25),
-            itemCount: days.length,
-            itemBuilder: (context, index) {
-              final day = days[index];
-              final dayItems = items.where((item) {
-                final date = item.plannedDate!.toLocal();
-                return date.year == day.year && date.month == day.month && date.day == day.day;
-              }).toList();
-              final activeMonth = day.month == month.month;
-              return InkWell(
-                onTap: () => onSelectDay(day),
-                child: Container(
-                  margin: const EdgeInsets.all(3),
-                  padding: const EdgeInsets.all(7),
-                  decoration: BoxDecoration(
-                    color: activeMonth ? const Color(0xFFFBFCFD) : const Color(0xFFF4F6F8),
-                    borderRadius: BorderRadius.circular(9),
-                    border: Border.all(color: const Color(0xFFE5EBF0)),
-                  ),
-                  child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                    Text('${day.day}', style: TextStyle(fontWeight: FontWeight.w800, color: activeMonth ? const Color(0xFF263449) : const Color(0xFFA8B0BC))),
-                    const SizedBox(height: 5),
-                    ...dayItems.take(3).map((item) => Container(
-                      width: double.infinity,
-                      margin: const EdgeInsets.only(bottom: 3),
-                      padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 3),
-                      decoration: BoxDecoration(color: _statusColor(item.status).withOpacity(.12), borderRadius: BorderRadius.circular(5)),
-                      child: Text(item.customerName, maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(fontSize: 9, fontWeight: FontWeight.w700, color: _statusColor(item.status))),
-                    )),
-                    if (dayItems.length > 3) Text('+${dayItems.length - 3} daha', style: const TextStyle(fontSize: 9, color: Color(0xFF758195))),
-                  ]),
+          _LegendDot('Planlandı', Color(0xFF2F80ED)),
+          _LegendDot('Devam Ediyor', Color(0xFF7C3AED)),
+          _LegendDot('Tamamlandı', Color(0xFF20A66A)),
+          _LegendDot('İptal', Color(0xFFE53935)),
+          _LegendDot('Atama Bekliyor', Color(0xFFF59E0B)),
+        ],
+      ),
+    );
+  }
+}
+
+class _LegendDot extends StatelessWidget {
+  const _LegendDot(this.label, this.color);
+  final String label;
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Container(
+          width: 8,
+          height: 8,
+          decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+        ),
+        const SizedBox(width: 6),
+        Text(
+          label,
+          style: const TextStyle(fontSize: 11, color: Color(0xFF536174)),
+        ),
+      ],
+    );
+  }
+}
+
+class _TechnicianPanel extends StatelessWidget {
+  const _TechnicianPanel({
+    required this.technicians,
+    required this.items,
+    required this.selected,
+    required this.search,
+    required this.showAll,
+    required this.onSearchChanged,
+    required this.onSelect,
+    required this.onToggleAll,
+  });
+
+  final List<String> technicians;
+  final List<ServiceRequestModel> items;
+  final String? selected;
+  final String search;
+  final bool showAll;
+  final ValueChanged<String> onSearchChanged;
+  final ValueChanged<String> onSelect;
+  final VoidCallback onToggleAll;
+
+  @override
+  Widget build(BuildContext context) {
+    final filtered = technicians.where((name) {
+      final q = search.trim().toLowerCase();
+      return q.isEmpty || name.toLowerCase().contains(q);
+    }).toList();
+    final visible = showAll ? filtered : filtered.take(4).toList();
+
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: _panelDecoration(shadow: false),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          const Text(
+            'Teknisyenler',
+            style: TextStyle(
+              fontSize: 17,
+              fontWeight: FontWeight.w900,
+              color: Color(0xFF16263A),
+            ),
+          ),
+          const SizedBox(height: 10),
+          TextField(
+            onChanged: onSearchChanged,
+            decoration: InputDecoration(
+              hintText: 'Teknisyen ara...',
+              suffixIcon: const Icon(Icons.search_rounded),
+              isDense: true,
+              filled: true,
+              fillColor: Colors.white,
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(9),
+                borderSide: const BorderSide(color: Color(0xFFDDE5EC)),
+              ),
+              enabledBorder: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(9),
+                borderSide: const BorderSide(color: Color(0xFFDDE5EC)),
+              ),
+            ),
+          ),
+          const SizedBox(height: 10),
+          if (visible.isEmpty)
+            const Expanded(
+              child: Center(
+                child: Text(
+                  'Teknisyen bulunamadı.',
+                  style: TextStyle(color: Color(0xFF8A97A8)),
                 ),
-              );
-            },
+              ),
+            )
+          else
+            Expanded(
+              child: ListView.separated(
+                itemCount: visible.length,
+                separatorBuilder: (_, __) => const SizedBox(height: 8),
+                itemBuilder: (context, index) {
+                  final name = visible[index];
+                  final techItems = items
+                      .where((e) => e.assignedTechnicianName.trim() == name)
+                      .toList();
+                  return _TechnicianCard(
+                    name: name,
+                    items: techItems,
+                    selected: selected == name,
+                    onTap: () => onSelect(name),
+                  );
+                },
+              ),
+            ),
+          const SizedBox(height: 8),
+          if (filtered.length > 4)
+            OutlinedButton.icon(
+              onPressed: onToggleAll,
+              icon: Icon(
+                showAll
+                    ? Icons.keyboard_arrow_up_rounded
+                    : Icons.keyboard_arrow_down_rounded,
+              ),
+              label: Text(showAll ? 'Daralt' : 'Tümünü Genişlet'),
+              style: OutlinedButton.styleFrom(
+                foregroundColor: const Color(0xFF08A9B7),
+                side: const BorderSide(color: Color(0xFF08A9B7)),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+class _TechnicianCard extends StatelessWidget {
+  const _TechnicianCard({
+    required this.name,
+    required this.items,
+    required this.selected,
+    required this.onTap,
+  });
+
+  final String name;
+  final List<ServiceRequestModel> items;
+  final bool selected;
+  final VoidCallback onTap;
+
+  int _count(ServiceRequestStatus status) =>
+      items.where((e) => e.status == status).length;
+
+  @override
+  Widget build(BuildContext context) {
+    final assigned = _count(ServiceRequestStatus.assigned);
+    final inProgress = _count(ServiceRequestStatus.inProgress);
+    final completed = _count(ServiceRequestStatus.completed);
+    final cancelled = _count(ServiceRequestStatus.cancelled) +
+        _count(ServiceRequestStatus.couldNotComplete);
+    final awaiting = _count(ServiceRequestStatus.approved) +
+        _count(ServiceRequestStatus.pending);
+
+    return Material(
+      color: selected ? const Color(0xFFF1FBFC) : Colors.white,
+      borderRadius: BorderRadius.circular(10),
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(10),
+        child: Container(
+          padding: const EdgeInsets.all(11),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(10),
+            border: Border.all(
+              color: selected
+                  ? const Color(0xFF08A9B7)
+                  : const Color(0xFFE1E8EF),
+              width: selected ? 1.5 : 1,
+            ),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  CircleAvatar(
+                    radius: 17,
+                    backgroundColor: const Color(0xFF13B7C3),
+                    child: Text(
+                      _initials(name),
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 11,
+                        fontWeight: FontWeight.w900,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 9),
+                  Expanded(
+                    child: Text(
+                      name,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        fontWeight: FontWeight.w900,
+                        color: Color(0xFF1E2D42),
+                      ),
+                    ),
+                  ),
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFE8F3FF),
+                      borderRadius: BorderRadius.circular(14),
+                    ),
+                    child: Text(
+                      '${items.length} iş',
+                      style: const TextStyle(
+                        color: Color(0xFF2F80ED),
+                        fontSize: 10,
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 9),
+              Row(
+                children: [
+                  _MiniCount(assigned, const Color(0xFF2F80ED)),
+                  _MiniCount(inProgress, const Color(0xFF7C3AED)),
+                  _MiniCount(completed, const Color(0xFF20A66A)),
+                  _MiniCount(cancelled, const Color(0xFFE53935)),
+                  _MiniCount(awaiting, const Color(0xFFF59E0B)),
+                  const Spacer(),
+                  Text(
+                    'Toplam ${items.length} iş',
+                    style: const TextStyle(
+                      color: Color(0xFF657287),
+                      fontSize: 9,
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _MiniCount extends StatelessWidget {
+  const _MiniCount(this.value, this.color);
+  final int value;
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(right: 9),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(
+            width: 7,
+            height: 7,
+            decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+          ),
+          const SizedBox(width: 3),
+          Text(
+            '$value',
+            style: TextStyle(
+              color: color,
+              fontSize: 9,
+              fontWeight: FontWeight.w800,
+            ),
           ),
         ],
       ),
@@ -725,191 +1051,310 @@ class _MonthCalendar extends StatelessWidget {
   }
 }
 
-class _ListCalendar extends StatelessWidget {
-  const _ListCalendar({required this.items, required this.anchor, required this.mode, required this.onOpen});
+class _SchedulePanel extends StatelessWidget {
+  const _SchedulePanel({
+    required this.technicianName,
+    required this.items,
+    required this.mode,
+    required this.anchor,
+    required this.onOpenRequests,
+    required this.onNewJob,
+  });
+
+  final String? technicianName;
   final List<ServiceRequestModel> items;
-  final DateTime anchor;
   final _CalendarMode mode;
-  final VoidCallback onOpen;
+  final DateTime anchor;
+  final VoidCallback onOpenRequests;
+  final VoidCallback onNewJob;
 
   @override
   Widget build(BuildContext context) {
-    final start = mode == _CalendarMode.month
-        ? DateTime(anchor.year, anchor.month, 1)
-        : anchor.subtract(Duration(days: anchor.weekday - 1));
-    final end = mode == _CalendarMode.month
-        ? DateTime(anchor.year, anchor.month + 1, 1)
-        : start.add(const Duration(days: 7));
-    final visible = items.where((item) {
-      final date = item.plannedDate!.toLocal();
-      return !date.isBefore(start) && date.isBefore(end);
-    }).toList();
     return Container(
-      padding: const EdgeInsets.all(15),
-      decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(14), border: Border.all(color: const Color(0xFFE3EAF0))),
-      child: visible.isEmpty
-          ? const _EmptyCalendar(message: 'Seçilen dönemde planlanmış servis bulunmuyor.')
-          : Column(children: visible.map((item) => Padding(padding: const EdgeInsets.only(bottom: 9), child: _CalendarEventCard(item: item, onTap: onOpen))).toList()),
+      decoration: _panelDecoration(shadow: false),
+      clipBehavior: Clip.antiAlias,
+      child: Column(
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(14, 12, 12, 10),
+            child: Row(
+              children: [
+                CircleAvatar(
+                  radius: 18,
+                  backgroundColor: const Color(0xFF13B7C3),
+                  child: Text(
+                    technicianName == null ? '—' : _initials(technicianName!),
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontWeight: FontWeight.w900,
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    technicianName ?? 'Tüm İşler',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      fontSize: 17,
+                      fontWeight: FontWeight.w900,
+                      color: Color(0xFF17263A),
+                    ),
+                  ),
+                ),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 5),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFE8F3FF),
+                    borderRadius: BorderRadius.circular(14),
+                  ),
+                  child: Text(
+                    '${items.length} iş',
+                    style: const TextStyle(
+                      color: Color(0xFF2F80ED),
+                      fontSize: 10,
+                      fontWeight: FontWeight.w800,
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                OutlinedButton.icon(
+                  onPressed: () => _printHint(context),
+                  icon: const Icon(Icons.print_outlined, size: 18),
+                  label: const Text('Takvimi Yazdır'),
+                ),
+              ],
+            ),
+          ),
+          const Divider(height: 1, color: Color(0xFFE5EBF0)),
+          const Padding(
+            padding: EdgeInsets.symmetric(horizontal: 18, vertical: 10),
+            child: Row(
+              children: [
+                Expanded(flex: 25, child: Text('Müşteri', style: _headerStyle)),
+                Expanded(flex: 36, child: Text('Adres', style: _headerStyle)),
+                Expanded(flex: 19, child: Text('Durum', style: _headerStyle)),
+                Expanded(flex: 14, child: Text('Fiyat', style: _headerStyle)),
+                SizedBox(width: 30),
+              ],
+            ),
+          ),
+          const Divider(height: 1, color: Color(0xFFE5EBF0)),
+          Expanded(
+            child: items.isEmpty
+                ? _EmptySchedule(mode: mode, anchor: anchor)
+                : ListView.separated(
+                    itemCount: items.length,
+                    separatorBuilder: (_, __) =>
+                        const Divider(height: 1, color: Color(0xFFE9EEF3)),
+                    itemBuilder: (context, index) => _ScheduleRow(
+                      item: items[index],
+                      onTap: onOpenRequests,
+                    ),
+                  ),
+          ),
+          InkWell(
+            onTap: onNewJob,
+            child: Container(
+              height: 52,
+              width: double.infinity,
+              margin: const EdgeInsets.all(10),
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(9),
+                border: Border.all(
+                  color: const Color(0xFFD6E4EA),
+                  style: BorderStyle.solid,
+                ),
+              ),
+              alignment: Alignment.center,
+              child: const Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(Icons.add_rounded, color: Color(0xFF08A9B7)),
+                  SizedBox(width: 7),
+                  Text(
+                    'Yeni iş ekle',
+                    style: TextStyle(
+                      color: Color(0xFF08A9B7),
+                      fontWeight: FontWeight.w800,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  static const _headerStyle = TextStyle(
+    color: Color(0xFF4E5D71),
+    fontSize: 11,
+    fontWeight: FontWeight.w800,
+  );
+
+  void _printHint(BuildContext context) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('Takvim yazdırma görünümü hazırlanıyor.'),
+        duration: Duration(seconds: 2),
+      ),
     );
   }
 }
 
-class _CalendarEventCard extends StatelessWidget {
-  const _CalendarEventCard({required this.item, required this.onTap, this.compact = false});
+class _ScheduleRow extends StatelessWidget {
+  const _ScheduleRow({required this.item, required this.onTap});
   final ServiceRequestModel item;
   final VoidCallback onTap;
-  final bool compact;
 
   @override
   Widget build(BuildContext context) {
     final color = _statusColor(item.status);
-    return Material(
-      color: color.withOpacity(.10),
-      borderRadius: BorderRadius.circular(9),
-      child: InkWell(
-        onTap: onTap,
-        borderRadius: BorderRadius.circular(9),
-        child: Container(
-          constraints: BoxConstraints(minHeight: compact ? 63 : 72),
-          padding: EdgeInsets.all(compact ? 7 : 11),
-          decoration: BoxDecoration(borderRadius: BorderRadius.circular(9), border: Border.all(color: color.withOpacity(.26))),
-          child: compact
-              ? Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                  Text(item.customerName.isEmpty ? 'Müşteri' : item.customerName, maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(fontSize: 11, fontWeight: FontWeight.w900, color: color)),
-                  const SizedBox(height: 3),
-                  Text(item.serviceType.label, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 9, fontWeight: FontWeight.w700, color: Color(0xFF46556A))),
-                  Text(item.customerAddress, maxLines: 2, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 8, color: Color(0xFF657287))),
-                  const SizedBox(height: 3),
-                  Text(item.assignedTechnicianName.isEmpty ? 'Atama bekliyor' : item.assignedTechnicianName, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 8, fontWeight: FontWeight.w700, color: Color(0xFF657287))),
-                ])
-              : Row(children: [
-                  Container(width: 4, height: 46, decoration: BoxDecoration(color: color, borderRadius: BorderRadius.circular(5))),
-                  const SizedBox(width: 11),
-                  Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                    Text(item.customerName.isEmpty ? 'Müşteri' : item.customerName, style: const TextStyle(fontWeight: FontWeight.w800, color: Color(0xFF243248))),
-                    Text('${item.serviceType.label} • ${item.customerAddress}', maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 12, color: Color(0xFF657287))),
-                  ])),
-                  const SizedBox(width: 10),
-                  Text(item.assignedTechnicianName.isEmpty ? 'Atama bekliyor' : item.assignedTechnicianName, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: Color(0xFF46556A))),
-                  const SizedBox(width: 14),
-                  _StatusBadge(status: item.status),
-                  const SizedBox(width: 7),
-                  const Icon(Icons.chevron_right, color: Color(0xFF8290A2)),
-                ]),
+    final address = [
+      item.customerAddress.trim(),
+      [item.customerDistrict.trim(), item.customerCity.trim()]
+          .where((e) => e.isNotEmpty)
+          .join(' / '),
+    ].where((e) => e.isNotEmpty).join('\n');
+
+    return InkWell(
+      onTap: onTap,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.center,
+          children: [
+            Expanded(
+              flex: 25,
+              child: Row(
+                children: [
+                  Container(
+                    width: 9,
+                    height: 9,
+                    decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+                  ),
+                  const SizedBox(width: 9),
+                  Expanded(
+                    child: Text(
+                      item.customerName.trim().isEmpty
+                          ? 'Müşteri'
+                          : item.customerName.trim(),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        fontWeight: FontWeight.w800,
+                        color: Color(0xFF17263A),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            Expanded(
+              flex: 36,
+              child: Text(
+                address.isEmpty ? 'Adres bilgisi yok' : address,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(
+                  color: Color(0xFF4C5C71),
+                  height: 1.4,
+                  fontSize: 11,
+                ),
+              ),
+            ),
+            Expanded(
+              flex: 19,
+              child: Align(
+                alignment: Alignment.centerLeft,
+                child: _StatusPill(status: item.status),
+              ),
+            ),
+            Expanded(
+              flex: 14,
+              child: Text(
+                _money(item.price),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(
+                  fontWeight: FontWeight.w800,
+                  color: Color(0xFF29384D),
+                ),
+              ),
+            ),
+            SizedBox(
+              width: 30,
+              child: PopupMenuButton<String>(
+                tooltip: 'İşlemler',
+                onSelected: (_) => onTap(),
+                itemBuilder: (context) => const [
+                  PopupMenuItem(value: 'open', child: Text('Servis talebini aç')),
+                ],
+              ),
+            ),
+          ],
         ),
       ),
     );
   }
 }
 
-class _StatusBadge extends StatelessWidget {
-  const _StatusBadge({required this.status});
+class _StatusPill extends StatelessWidget {
+  const _StatusPill({required this.status});
   final ServiceRequestStatus status;
 
   @override
   Widget build(BuildContext context) {
     final color = _statusColor(status);
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 6),
-      decoration: BoxDecoration(color: color.withOpacity(.12), borderRadius: BorderRadius.circular(20)),
-      child: Text(status.label, style: TextStyle(fontSize: 10, fontWeight: FontWeight.w800, color: color)),
-    );
-  }
-}
-
-Color _statusColor(ServiceRequestStatus status) {
-  switch (status) {
-    case ServiceRequestStatus.pending:
-      return const Color(0xFFF59E0B);
-    case ServiceRequestStatus.approved:
-      return const Color(0xFF0891B2);
-    case ServiceRequestStatus.deferred:
-      return const Color(0xFF64748B);
-    case ServiceRequestStatus.assigned:
-      return const Color(0xFF2F80ED);
-    case ServiceRequestStatus.inProgress:
-      return const Color(0xFF7C3AED);
-    case ServiceRequestStatus.completed:
-      return const Color(0xFF20A66A);
-    case ServiceRequestStatus.cancelled:
-    case ServiceRequestStatus.couldNotComplete:
-      return const Color(0xFFE34D59);
-  }
-}
-
-class _TechnicianStrip extends StatelessWidget {
-  const _TechnicianStrip({required this.items});
-  final List<ServiceRequestModel> items;
-
-  @override
-  Widget build(BuildContext context) {
-    final grouped = <String, List<ServiceRequestModel>>{};
-    for (final item in items) {
-      final name = item.assignedTechnicianName.trim();
-      if (name.isEmpty) continue;
-      grouped.putIfAbsent(name, () => []).add(item);
-    }
-    if (grouped.isEmpty) return const SizedBox.shrink();
-    final entries = grouped.entries.toList()..sort((a, b) => b.value.length.compareTo(a.value.length));
-    return Container(
-      padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(14), border: Border.all(color: const Color(0xFFE3EAF0))),
-      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        const Text('Teknisyenler', style: TextStyle(fontWeight: FontWeight.w900, color: Color(0xFF243248))),
-        const SizedBox(height: 11),
-        SizedBox(
-          height: 102,
-          child: ListView.separated(
-            scrollDirection: Axis.horizontal,
-            itemCount: entries.length,
-            separatorBuilder: (_, __) => const SizedBox(width: 10),
-            itemBuilder: (context, index) {
-              final entry = entries[index];
-              final complete = entry.value.where((e) => e.status == ServiceRequestStatus.completed).length;
-              final ongoing = entry.value.where((e) => e.status == ServiceRequestStatus.inProgress).length;
-              return Container(
-                width: 220,
-                padding: const EdgeInsets.all(12),
-                decoration: BoxDecoration(color: const Color(0xFFFAFCFD), borderRadius: BorderRadius.circular(11), border: Border.all(color: const Color(0xFFE3EAF0))),
-                child: Row(children: [
-                  CircleAvatar(backgroundColor: const Color(0xFFE5F8F9), child: Text(_initials(entry.key), style: const TextStyle(color: Color(0xFF0798A7), fontWeight: FontWeight.w900))),
-                  const SizedBox(width: 11),
-                  Expanded(child: Column(mainAxisAlignment: MainAxisAlignment.center, crossAxisAlignment: CrossAxisAlignment.start, children: [
-                    Text(entry.key, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontWeight: FontWeight.w800, color: Color(0xFF243248))),
-                    const SizedBox(height: 6),
-                    Text('${entry.value.length} servis • $ongoing işlemde', style: const TextStyle(fontSize: 11, color: Color(0xFF718096))),
-                    Text('$complete tamamlandı', style: const TextStyle(fontSize: 11, color: Color(0xFF20A66A), fontWeight: FontWeight.w700)),
-                  ])),
-                ]),
-              );
-            },
-          ),
+      padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 5),
+      decoration: BoxDecoration(
+        color: color.withOpacity(.11),
+        borderRadius: BorderRadius.circular(16),
+      ),
+      child: Text(
+        _statusLabel(status),
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+        style: TextStyle(
+          color: color,
+          fontSize: 10,
+          fontWeight: FontWeight.w800,
         ),
-      ]),
+      ),
     );
   }
 }
 
-String _initials(String name) {
-  final parts = name.trim().split(RegExp(r'\s+')).where((e) => e.isNotEmpty).toList();
-  if (parts.isEmpty) return '?';
-  if (parts.length == 1) return parts.first.substring(0, 1).toUpperCase();
-  return '${parts.first[0]}${parts.last[0]}'.toUpperCase();
-}
-
-class _EmptyCalendar extends StatelessWidget {
-  const _EmptyCalendar({required this.message});
-  final String message;
+class _EmptySchedule extends StatelessWidget {
+  const _EmptySchedule({required this.mode, required this.anchor});
+  final _CalendarMode mode;
+  final DateTime anchor;
 
   @override
   Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 55),
-      child: Column(children: [
-        const Icon(Icons.event_busy_outlined, size: 48, color: Color(0xFFB2BEC9)),
-        const SizedBox(height: 10),
-        Text(message, style: const TextStyle(color: Color(0xFF718096))),
-      ]),
+    final label = mode == _CalendarMode.day
+        ? DateFormat('dd MMMM yyyy', 'tr_TR').format(anchor)
+        : 'seçilen dönem';
+    return Center(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const Icon(
+            Icons.event_available_outlined,
+            size: 40,
+            color: Color(0xFFB2BCC8),
+          ),
+          const SizedBox(height: 9),
+          Text(
+            '$label için planlanmış servis yok.',
+            style: const TextStyle(color: Color(0xFF7D899A)),
+          ),
+        ],
+      ),
     );
   }
 }
@@ -922,120 +1367,100 @@ class _ErrorState extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Center(
-      child: Column(mainAxisSize: MainAxisSize.min, children: [
-        const Icon(Icons.error_outline, size: 50, color: Color(0xFFE34D59)),
-        const SizedBox(height: 12),
-        Text(message, textAlign: TextAlign.center),
-        const SizedBox(height: 12),
-        FilledButton.icon(onPressed: onRetry, icon: const Icon(Icons.refresh), label: const Text('Tekrar Dene')),
-      ]),
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 520),
+        child: Card(
+          child: Padding(
+            padding: const EdgeInsets.all(22),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(Icons.error_outline_rounded, size: 42),
+                const SizedBox(height: 10),
+                Text(message, textAlign: TextAlign.center),
+                const SizedBox(height: 14),
+                FilledButton.icon(
+                  onPressed: onRetry,
+                  icon: const Icon(Icons.refresh_rounded),
+                  label: const Text('Tekrar Dene'),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
     );
   }
 }
 
-class _CalendarSidebar extends StatelessWidget {
-  const _CalendarSidebar({required this.role, required this.displayName});
-  final AppRole role;
-  final String displayName;
-
-  String get prefix => role == AppRole.secretary ? '/secretary' : '/manager';
-  String get dashboard => role == AppRole.secretary ? '/secretary-dashboard' : '/admin-dashboard';
-
-  @override
-  Widget build(BuildContext context) {
-    Widget item(IconData icon, String label, String route, {bool selected = false}) {
-      return Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
-        child: Material(
-          color: selected ? const Color(0xFF0D5368) : Colors.transparent,
-          borderRadius: BorderRadius.circular(12),
-          child: ListTile(
-            dense: true,
-            leading: Icon(icon, color: selected ? const Color(0xFF16D0DB) : const Color(0xFFC5D2DD), size: 21),
-            title: Text(label, style: TextStyle(color: selected ? Colors.white : const Color(0xFFD7E1E9), fontWeight: FontWeight.w600)),
-            onTap: () => context.go(route),
-          ),
-        ),
-      );
-    }
-
-    return Container(
-      color: const Color(0xFF071C2D),
-      child: SafeArea(
-        child: Column(children: [
-          const Padding(
-            padding: EdgeInsets.fromLTRB(22, 22, 16, 24),
-            child: Row(children: [
-              Icon(Icons.water_drop_rounded, color: Color(0xFF13C7D3), size: 40),
-              SizedBox(width: 10),
-              Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                Text('ARN', style: TextStyle(color: Colors.white, fontSize: 25, fontWeight: FontWeight.w900)),
-                Text('SU ARITMA', style: TextStyle(color: Colors.white70, fontSize: 10, letterSpacing: 1.4)),
-              ]),
-            ]),
-          ),
-          item(Icons.dashboard_outlined, role == AppRole.secretary ? 'Ana Sayfa' : 'Dashboard', dashboard),
-          if (role == AppRole.secretary) ...[
-            Theme(
-              data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
-              child: ExpansionTile(
-                initiallyExpanded: true,
-                tilePadding: const EdgeInsets.symmetric(horizontal: 20),
-                leading: const Icon(Icons.people_alt_outlined, color: Color(0xFFC5D2DD), size: 21),
-                title: const Text('Müşteriler', style: TextStyle(color: Color(0xFFD7E1E9), fontWeight: FontWeight.w700)),
-                iconColor: const Color(0xFF16D0DB),
-                collapsedIconColor: const Color(0xFF8DA0B2),
-                children: [
-                  item(Icons.groups_2_outlined, 'Müşteri Listesi', '$prefix/customers'),
-                  item(Icons.person_add_alt_1_outlined, 'Yeni Müşteri', '$prefix/customers/new'),
-                  item(Icons.history_rounded, 'Geçmiş Müşteri Kaydı', '$prefix/customers/historical'),
-                ],
-              ),
+BoxDecoration _panelDecoration({bool shadow = true}) {
+  return BoxDecoration(
+    color: Colors.white,
+    borderRadius: BorderRadius.circular(14),
+    border: Border.all(color: const Color(0xFFE1E8EF)),
+    boxShadow: shadow
+        ? const [
+            BoxShadow(
+              color: Color(0x0B102235),
+              blurRadius: 16,
+              offset: Offset(0, 5),
             ),
-            Theme(
-              data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
-              child: ExpansionTile(
-                initiallyExpanded: true,
-                tilePadding: const EdgeInsets.symmetric(horizontal: 20),
-                leading: const Icon(Icons.work_outline, color: Color(0xFF16D0DB), size: 21),
-                title: const Text('Servis Talepleri', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w700)),
-                iconColor: const Color(0xFF16D0DB),
-                collapsedIconColor: const Color(0xFF8DA0B2),
-                children: [
-                  item(Icons.assignment_outlined, 'Servis Talepleri', '$prefix/service-requests'),
-                  item(Icons.calendar_month_outlined, 'Takvim', '$prefix/service-planning', selected: true),
-                ],
-              ),
-            ),
-            item(Icons.notifications_active_outlined, 'Bakımı Yaklaşanlar', '$prefix/maintenance'),
-            item(Icons.notifications_none_rounded, 'Bildirimler', '/notifications'),
-          ] else ...[
-            item(Icons.people_alt_outlined, 'Müşteriler', '$prefix/customers'),
-            item(Icons.work_outline, 'Servis Talepleri', '$prefix/service-requests'),
-            item(Icons.calendar_month_outlined, 'Takvim', '$prefix/service-planning', selected: true),
-          ],
-          if (role != AppRole.secretary) ...[
-            item(Icons.inventory_2_outlined, 'Ürünler', '$prefix/products'),
-            item(Icons.payments_outlined, 'Tahsilatlar', '/manager/payments'),
-            item(Icons.assessment_outlined, 'Raporlar', '/manager/reports'),
-            item(Icons.badge_outlined, 'Personeller', '/manager/users'),
-            item(Icons.settings_outlined, 'Ayarlar', '/manager/settings'),
-          ],
-          const Spacer(),
-          const Divider(color: Color(0xFF17364A)),
-          Padding(
-            padding: const EdgeInsets.all(16),
-            child: Row(children: [
-              const CircleAvatar(backgroundColor: Color(0xFF18C7D1), child: Icon(Icons.person_outline, color: Colors.white)),
-              const SizedBox(width: 10),
-              Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                Text(displayName, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w700)),
-                Text(role.label, style: const TextStyle(color: Colors.white60, fontSize: 12)),
-              ])),
-            ]),
-          ),
-        ]),
-      ),
-    );
+          ]
+        : const [],
+  );
+}
+
+Color _statusColor(ServiceRequestStatus status) {
+  switch (status) {
+    case ServiceRequestStatus.assigned:
+      return const Color(0xFF2F80ED);
+    case ServiceRequestStatus.inProgress:
+      return const Color(0xFF7C3AED);
+    case ServiceRequestStatus.completed:
+      return const Color(0xFF20A66A);
+    case ServiceRequestStatus.cancelled:
+    case ServiceRequestStatus.couldNotComplete:
+      return const Color(0xFFE53935);
+    case ServiceRequestStatus.pending:
+    case ServiceRequestStatus.approved:
+      return const Color(0xFFF59E0B);
+    case ServiceRequestStatus.deferred:
+      return const Color(0xFF64748B);
   }
+}
+
+String _statusLabel(ServiceRequestStatus status) {
+  switch (status) {
+    case ServiceRequestStatus.assigned:
+      return 'Planlandı';
+    case ServiceRequestStatus.inProgress:
+      return 'Devam Ediyor';
+    case ServiceRequestStatus.completed:
+      return 'Tamamlandı';
+    case ServiceRequestStatus.cancelled:
+    case ServiceRequestStatus.couldNotComplete:
+      return 'İptal';
+    case ServiceRequestStatus.pending:
+    case ServiceRequestStatus.approved:
+      return 'Atama Bekliyor';
+    case ServiceRequestStatus.deferred:
+      return 'Tehir';
+  }
+}
+
+String _money(double value) {
+  if (value <= 0) return '—';
+  final formatted = NumberFormat.currency(
+    locale: 'tr_TR',
+    symbol: '₺',
+    decimalDigits: 2,
+  ).format(value);
+  return formatted;
+}
+
+String _initials(String name) {
+  final parts = name.trim().split(RegExp(r'\s+')).where((e) => e.isNotEmpty).toList();
+  if (parts.isEmpty) return '?';
+  if (parts.length == 1) return parts.first.substring(0, 1).toUpperCase();
+  return '${parts.first[0]}${parts.last[0]}'.toUpperCase();
 }

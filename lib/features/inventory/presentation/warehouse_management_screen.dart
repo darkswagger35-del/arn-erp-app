@@ -19,6 +19,8 @@ class _WarehouseManagementScreenState
     extends ConsumerState<WarehouseManagementScreen> {
   String _query = '';
   String _type = 'all';
+  final Set<String> _expandedWarehouses = <String>{};
+  bool _showAllMainProducts = false;
   late Future<_WarehouseDashboardData> _future;
 
   @override
@@ -53,7 +55,7 @@ class _WarehouseManagementScreenState
       title: 'Depolar',
       subtitle: 'Depolarınızı, stok durumlarını ve depo hareketlerini yönetin.',
       actions: [
-        FilledButton.icon(
+        FilledButton.tonalIcon(
           onPressed: () async {
             final data = await _future;
             if (!context.mounted) return;
@@ -63,11 +65,7 @@ class _WarehouseManagementScreenState
           label: const Text('Ürün Transferi'),
         ),
         const SizedBox(width: 8),
-        IconButton(
-          tooltip: 'Yenile',
-          onPressed: _reload,
-          icon: const Icon(Icons.refresh_rounded),
-        ),
+        IconButton(tooltip: 'Yenile', onPressed: _reload, icon: const Icon(Icons.refresh_rounded)),
       ],
       child: FutureBuilder<_WarehouseDashboardData>(
         future: _future,
@@ -76,76 +74,49 @@ class _WarehouseManagementScreenState
             return const Center(child: CircularProgressIndicator());
           }
           if (snapshot.hasError) {
-            return Center(
-              child: Padding(
-                padding: const EdgeInsets.all(24),
-                child: Text(
-                  'Depolar yüklenemedi.\n${snapshot.error}',
-                  textAlign: TextAlign.center,
-                ),
-              ),
-            );
+            return Center(child: Padding(padding: const EdgeInsets.all(24), child: Text('Depolar yüklenemedi.\n${snapshot.error}', textAlign: TextAlign.center)));
           }
+
           final data = snapshot.data!;
-          final filtered = data.warehouses.where((warehouse) {
-            final matchesQuery = warehouse.name
-                .toLowerCase()
-                .contains(_query.trim().toLowerCase());
-            final matchesType = _type == 'all' || warehouse.type == _type;
-            return matchesQuery && matchesType;
-          }).toList();
-          final totalStock = data.stocks.values
-              .expand((items) => items)
+          final mainWarehouses = data.warehouses.where((w) => w.type == 'main').toList(growable: false);
+          final mainWarehouse = mainWarehouses.isEmpty ? null : mainWarehouses.first;
+          final vehicleWarehouses = data.warehouses.where((w) => w.type == 'vehicle').toList(growable: false);
+          final query = _query.trim().toLowerCase();
+          final filteredVehicles = vehicleWarehouses.where((warehouse) {
+            if (_type != 'all' && _type != 'vehicle') return false;
+            if (query.isEmpty) return true;
+            final stocks = data.stocks[warehouse.id] ?? const <WarehouseStockItem>[];
+            return warehouse.name.toLowerCase().contains(query) ||
+                (warehouse.technicianName ?? '').toLowerCase().contains(query) ||
+                stocks.any((item) => item.productName.toLowerCase().contains(query));
+          }).toList(growable: false);
+
+          final mainStocks = mainWarehouse == null ? const <WarehouseStockItem>[] : (data.stocks[mainWarehouse.id] ?? const <WarehouseStockItem>[]);
+          final mainStockTotal = mainStocks.fold<double>(0, (sum, item) => sum + item.quantity);
+          final vehicleStockTotal = vehicleWarehouses
+              .expand((w) => data.stocks[w.id] ?? const <WarehouseStockItem>[])
               .fold<double>(0, (sum, item) => sum + item.quantity);
-          final vehicleCount =
-              data.warehouses.where((item) => item.type == 'vehicle').length;
-          final stockedWarehouses = data.stocks.values
-              .where((items) => items.any((item) => item.quantity > 0))
-              .length;
+          final stockedVehicleCount = vehicleWarehouses.where((w) => (data.stocks[w.id] ?? const <WarehouseStockItem>[]).any((i) => i.quantity > 0)).length;
+          final emptyVehicleCount = vehicleWarehouses.length - stockedVehicleCount;
 
           return ListView(
             padding: const EdgeInsets.all(18),
             children: [
               LayoutBuilder(
                 builder: (context, constraints) {
-                  final width = constraints.maxWidth;
-                  final count = width >= 1200 ? 4 : width >= 700 ? 2 : 1;
+                  final count = constraints.maxWidth >= 1120 ? 4 : constraints.maxWidth >= 700 ? 2 : 1;
                   return GridView.count(
                     crossAxisCount: count,
                     shrinkWrap: true,
                     physics: const NeverScrollableScrollPhysics(),
                     mainAxisSpacing: 12,
                     crossAxisSpacing: 12,
-                    childAspectRatio: count == 1 ? 3.2 : 2.45,
+                    childAspectRatio: count == 1 ? 3.4 : 2.55,
                     children: [
-                      _MetricCard(
-                        label: 'Toplam Depo',
-                        value: '${data.warehouses.length}',
-                        detail: 'Aktif depolarınız',
-                        icon: Icons.warehouse_outlined,
-                        color: const Color(0xFF2F80ED),
-                      ),
-                      _MetricCard(
-                        label: 'Toplam Stok Adedi',
-                        value: _quantity(totalStock),
-                        detail: 'Tüm depolardaki toplam',
-                        icon: Icons.inventory_2_outlined,
-                        color: const Color(0xFFF5A623),
-                      ),
-                      _MetricCard(
-                        label: 'Araç Depoları',
-                        value: '$vehicleCount',
-                        detail: 'Teknisyen araç depoları',
-                        icon: Icons.local_shipping_outlined,
-                        color: const Color(0xFF8B5CF6),
-                      ),
-                      _MetricCard(
-                        label: 'Stok Bulunan Depo',
-                        value: '$stockedWarehouses',
-                        detail: 'En az bir ürünü olan',
-                        icon: Icons.check_circle_outline_rounded,
-                        color: const Color(0xFF18A66A),
-                      ),
+                      _MetricCard(label: 'Ana Depo Stoku', value: _quantity(mainStockTotal), detail: '${mainStocks.length} ürün', icon: Icons.warehouse_outlined, color: const Color(0xFF12A7B5)),
+                      _MetricCard(label: 'Araçlardaki Toplam Stok', value: _quantity(vehicleStockTotal), detail: '${vehicleWarehouses.length} araç', icon: Icons.local_shipping_outlined, color: const Color(0xFFF59A23)),
+                      _MetricCard(label: 'Aktif Araç Deposu', value: '$stockedVehicleCount', detail: 'Stok bulunan araç', icon: Icons.local_shipping_rounded, color: const Color(0xFF8B5CF6)),
+                      _MetricCard(label: 'Stoksuz Araç', value: '$emptyVehicleCount', detail: 'Stok bulunmayan araç', icon: Icons.remove_circle_outline, color: const Color(0xFFE65353)),
                     ],
                   );
                 },
@@ -156,59 +127,68 @@ class _WarehouseManagementScreenState
                 type: _type,
                 onQueryChanged: (value) => setState(() => _query = value),
                 onTypeChanged: (value) => setState(() => _type = value),
-                onClear: () => setState(() {
-                  _query = '';
-                  _type = 'all';
-                }),
+                onClear: () => setState(() { _query = ''; _type = 'all'; }),
               ),
               const SizedBox(height: 14),
-              _Panel(
-                title: 'Depolarım',
-                badge: '${filtered.length}',
-                child: filtered.isEmpty
-                    ? const Padding(
-                        padding: EdgeInsets.all(38),
-                        child: Center(child: Text('Filtreye uygun depo bulunamadı.')),
-                      )
-                    : LayoutBuilder(
-                        builder: (context, constraints) {
-                          if (constraints.maxWidth < 760) {
-                            return Column(
-                              children: filtered.map((warehouse) {
-                                final stocks = data.stocks[warehouse.id] ?? const <WarehouseStockItem>[];
-                                return _WarehouseMobileCard(
-                                  warehouse: warehouse,
-                                  stocks: stocks,
-                                  onStockAdd: warehouse.type == 'main'
-                                      ? () => _addStock(context, warehouse)
-                                      : null,
-                                  onView: () => _showWarehouseDetails(context, warehouse, stocks),
-                                );
-                              }).toList(growable: false),
-                            );
-                          }
-                          return Column(
-                            children: [
-                              const _WarehouseHeader(),
-                              ...filtered.map(
-                                (warehouse) => _WarehouseRow(
-                                  warehouse: warehouse,
-                                  stocks: data.stocks[warehouse.id] ?? const [],
-                                  onStockAdd: warehouse.type == 'main'
-                                      ? () => _addStock(context, warehouse)
-                                      : null,
-                                  onView: () => _showWarehouseDetails(
-                                    context,
-                                    warehouse,
-                                    data.stocks[warehouse.id] ?? const [],
-                                  ),
-                                ),
-                              ),
-                            ],
-                          );
-                        },
-                      ),
+              if (mainWarehouse != null && (_type == 'all' || _type == 'main'))
+                _MainWarehouseCard(
+                  warehouse: mainWarehouse,
+                  stocks: mainStocks,
+                  showAll: _showAllMainProducts,
+                  onToggleAll: () => setState(() => _showAllMainProducts = !_showAllMainProducts),
+                  onAddStock: () => _addStock(context, mainWarehouse),
+                ),
+              if (mainWarehouse != null && (_type == 'all' || _type == 'main')) const SizedBox(height: 18),
+              Row(
+                children: [
+                  const Text('Tekniker Araç Depoları', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w900, color: Color(0xFF10243A))),
+                  const SizedBox(width: 8),
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
+                    decoration: BoxDecoration(color: const Color(0xFFEFF3F7), borderRadius: BorderRadius.circular(999)),
+                    child: Text('${filteredVehicles.length} araç'),
+                  ),
+                  const Spacer(),
+                  TextButton.icon(
+                    onPressed: filteredVehicles.isEmpty ? null : () => setState(() {
+                      final allOpen = filteredVehicles.every((w) => _expandedWarehouses.contains(w.id));
+                      if (allOpen) {
+                        _expandedWarehouses.removeAll(filteredVehicles.map((w) => w.id));
+                      } else {
+                        _expandedWarehouses.addAll(filteredVehicles.map((w) => w.id));
+                      }
+                    }),
+                    icon: const Icon(Icons.unfold_more_rounded),
+                    label: const Text('Tümünü Aç / Kapat'),
+                  ),
+                ],
               ),
+              const SizedBox(height: 10),
+              if (filteredVehicles.isEmpty)
+                const _WarehouseEmpty()
+              else
+                ...filteredVehicles.map((warehouse) {
+                  final stocks = data.stocks[warehouse.id] ?? const <WarehouseStockItem>[];
+                  final expanded = _expandedWarehouses.contains(warehouse.id);
+                  return Padding(
+                    padding: const EdgeInsets.only(bottom: 10),
+                    child: _VehicleWarehouseAccordion(
+                      warehouse: warehouse,
+                      stocks: stocks,
+                      expanded: expanded,
+                      onToggle: () => setState(() {
+                        if (expanded) {
+                          _expandedWarehouses.remove(warehouse.id);
+                        } else {
+                          _expandedWarehouses.add(warehouse.id);
+                        }
+                      }),
+                      onAddStock: () => _addStock(context, warehouse),
+                      onReturnToMain: mainWarehouse == null ? null : () => _openTransfer(context, data.warehouses, sourceWarehouseId: warehouse.id, destinationWarehouseId: mainWarehouse.id),
+                      onTransferToVehicle: () => _openTransfer(context, data.warehouses, sourceWarehouseId: warehouse.id, vehicleDestinationsOnly: true),
+                    ),
+                  );
+                }),
             ],
           );
         },
@@ -261,8 +241,11 @@ class _WarehouseManagementScreenState
 
   Future<void> _openTransfer(
     BuildContext context,
-    List<WarehouseItem> warehouses,
-  ) async {
+    List<WarehouseItem> warehouses, {
+    String? sourceWarehouseId,
+    String? destinationWarehouseId,
+    bool vehicleDestinationsOnly = false,
+  }) async {
     if (warehouses.length < 2) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Transfer için en az iki depo gerekir.')),
@@ -272,10 +255,17 @@ class _WarehouseManagementScreenState
     final products = await ref.read(inventoryRepositoryProvider).getProducts();
     if (!context.mounted || products.isEmpty) return;
 
-    String source = warehouses
+    String source = sourceWarehouseId ?? warehouses
         .firstWhere((w) => w.type == 'main', orElse: () => warehouses.first)
         .id;
-    String destination = warehouses.firstWhere((w) => w.id != source).id;
+    final destinationCandidates = warehouses.where((w) => w.id != source && (!vehicleDestinationsOnly || w.type == 'vehicle')).toList(growable: false);
+    if (destinationCandidates.isEmpty) {
+      if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Uygun hedef depo bulunamadı.')));
+      return;
+    }
+    String destination = destinationWarehouseId != null && destinationCandidates.any((w) => w.id == destinationWarehouseId)
+        ? destinationWarehouseId
+        : destinationCandidates.first.id;
     String productId = products.first['id'].toString();
     final quantity = TextEditingController();
     final notes = TextEditingController();
@@ -305,8 +295,9 @@ class _WarehouseManagementScreenState
                         .toList(),
                     onChanged: (value) => setState(() {
                       source = value!;
-                      if (destination == source) {
-                        destination = warehouses.firstWhere((w) => w.id != source).id;
+                      final candidates = warehouses.where((w) => w.id != source && (!vehicleDestinationsOnly || w.type == 'vehicle')).toList(growable: false);
+                      if (candidates.isNotEmpty && !candidates.any((w) => w.id == destination)) {
+                        destination = candidates.first.id;
                       }
                     }),
                   ),
@@ -315,7 +306,7 @@ class _WarehouseManagementScreenState
                     initialValue: destination,
                     decoration: const InputDecoration(labelText: 'Hedef depo'),
                     items: warehouses
-                        .where((w) => w.id != source)
+                        .where((w) => w.id != source && (!vehicleDestinationsOnly || w.type == 'vehicle'))
                         .map((w) => DropdownMenuItem(
                               value: w.id,
                               child: Text(w.name),
@@ -600,7 +591,7 @@ class _FilterCard extends StatelessWidget {
               onChanged: onQueryChanged,
               decoration: const InputDecoration(
                 prefixIcon: Icon(Icons.search),
-                hintText: 'Depo adı ile ara...',
+                hintText: 'Tekniker veya ürün ara...',
               ),
             ),
           ),
@@ -626,6 +617,224 @@ class _FilterCard extends StatelessWidget {
       ),
     );
   }
+}
+
+class _MainWarehouseCard extends StatelessWidget {
+  const _MainWarehouseCard({
+    required this.warehouse,
+    required this.stocks,
+    required this.showAll,
+    required this.onToggleAll,
+    required this.onAddStock,
+  });
+
+  final WarehouseItem warehouse;
+  final List<WarehouseStockItem> stocks;
+  final bool showAll;
+  final VoidCallback onToggleAll;
+  final VoidCallback onAddStock;
+
+  @override
+  Widget build(BuildContext context) {
+    final total = stocks.fold<double>(0, (sum, item) => sum + item.quantity);
+    final visible = showAll ? stocks : stocks.take(4).toList(growable: false);
+    return Container(
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: const Color(0xFFE1E8F0)),
+      ),
+      child: Column(
+        children: [
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 14),
+            child: Row(
+              children: [
+                const CircleAvatar(backgroundColor: Color(0xFFE7F7F8), child: Icon(Icons.warehouse_outlined, color: Color(0xFF0BA6B5))),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(children: [
+                        Text(warehouse.name, style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w900, color: Color(0xFF10243A))),
+                        const SizedBox(width: 8),
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                          decoration: BoxDecoration(color: const Color(0xFFE3F6EB), borderRadius: BorderRadius.circular(999)),
+                          child: const Text('Merkez', style: TextStyle(color: Color(0xFF168650), fontSize: 11, fontWeight: FontWeight.w800)),
+                        ),
+                      ]),
+                      const SizedBox(height: 3),
+                      Text('${_WarehouseManagementScreenState._quantity(total)} adet  •  ${stocks.length} ürün', style: const TextStyle(color: Color(0xFF5E7085))),
+                    ],
+                  ),
+                ),
+                OutlinedButton.icon(onPressed: onToggleAll, icon: Icon(showAll ? Icons.expand_less : Icons.arrow_forward), label: Text(showAll ? 'Daralt' : 'Tümünü Gör')),
+              ],
+            ),
+          ),
+          const Divider(height: 1),
+          Padding(
+            padding: const EdgeInsets.all(14),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    const SizedBox(width: 130, child: Text('Öne Çıkan Ürünler', style: TextStyle(fontWeight: FontWeight.w800, color: Color(0xFF42556A)))),
+                    Expanded(
+                      child: Wrap(
+                        spacing: 8,
+                        runSpacing: 8,
+                        children: [
+                          ...visible.map((item) => Container(
+                                constraints: const BoxConstraints(minWidth: 155),
+                                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
+                                decoration: BoxDecoration(color: const Color(0xFFF9FBFD), borderRadius: BorderRadius.circular(10), border: Border.all(color: const Color(0xFFE5EBF1))),
+                                child: Row(mainAxisSize: MainAxisSize.min, children: [
+                                  const Icon(Icons.inventory_2_outlined, size: 18, color: Color(0xFF2F80ED)),
+                                  const SizedBox(width: 8),
+                                  Flexible(child: Text('${item.productName}  ${_WarehouseManagementScreenState._quantity(item.quantity)} adet', overflow: TextOverflow.ellipsis, style: const TextStyle(fontWeight: FontWeight.w800))),
+                                ]),
+                              )),
+                          if (!showAll && stocks.length > visible.length)
+                            TextButton(onPressed: onToggleAll, child: Text('+ ${stocks.length - visible.length} ürün daha')),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+                if (showAll) ...[
+                  const SizedBox(height: 12),
+                  Align(alignment: Alignment.centerLeft, child: OutlinedButton.icon(onPressed: onAddStock, icon: const Icon(Icons.add_rounded), label: const Text('Ana Depoya Stok Ekle'))),
+                ],
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _VehicleWarehouseAccordion extends StatelessWidget {
+  const _VehicleWarehouseAccordion({
+    required this.warehouse,
+    required this.stocks,
+    required this.expanded,
+    required this.onToggle,
+    required this.onAddStock,
+    required this.onReturnToMain,
+    required this.onTransferToVehicle,
+  });
+
+  final WarehouseItem warehouse;
+  final List<WarehouseStockItem> stocks;
+  final bool expanded;
+  final VoidCallback onToggle;
+  final VoidCallback onAddStock;
+  final VoidCallback? onReturnToMain;
+  final VoidCallback onTransferToVehicle;
+
+  @override
+  Widget build(BuildContext context) {
+    final total = stocks.fold<double>(0, (sum, item) => sum + item.quantity);
+    final displayName = (warehouse.technicianName?.trim().isNotEmpty ?? false) ? warehouse.technicianName! : warehouse.name.replaceAll(' Araç Deposu', '');
+    return Container(
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: expanded ? const Color(0xFF13B8C6) : const Color(0xFFE1E8F0), width: expanded ? 1.4 : 1),
+      ),
+      child: Column(
+        children: [
+          InkWell(
+            onTap: onToggle,
+            borderRadius: BorderRadius.circular(14),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 13),
+              child: Row(
+                children: [
+                  const CircleAvatar(backgroundColor: Color(0xFFE7F7F8), child: Icon(Icons.local_shipping_outlined, color: Color(0xFF0BA6B5))),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(children: [
+                          Flexible(child: Text(displayName, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w900, color: Color(0xFF10243A)))),
+                          const SizedBox(width: 8),
+                          Container(padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3), decoration: BoxDecoration(color: const Color(0xFFE3F6EB), borderRadius: BorderRadius.circular(999)), child: const Text('Aktif', style: TextStyle(color: Color(0xFF168650), fontSize: 11, fontWeight: FontWeight.w800))),
+                        ]),
+                        const SizedBox(height: 2),
+                        Text(stocks.isEmpty ? 'Araçta stok yok' : '${_WarehouseManagementScreenState._quantity(total)} adet  •  ${stocks.length} ürün', style: const TextStyle(color: Color(0xFF607287))),
+                      ],
+                    ),
+                  ),
+                  Icon(expanded ? Icons.keyboard_arrow_up_rounded : Icons.keyboard_arrow_down_rounded, color: const Color(0xFF42566C)),
+                ],
+              ),
+            ),
+          ),
+          if (expanded) ...[
+            const Divider(height: 1),
+            if (stocks.isEmpty)
+              const Padding(padding: EdgeInsets.all(22), child: Align(alignment: Alignment.centerLeft, child: Text('Bu araç deposunda ürün bulunmuyor.', style: TextStyle(color: Color(0xFF718196)))))
+            else
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 10, 16, 4),
+                child: Column(
+                  children: [
+                    const Padding(
+                      padding: EdgeInsets.symmetric(horizontal: 8, vertical: 7),
+                      child: Row(children: [
+                        Expanded(flex: 4, child: Text('Ürün', style: TextStyle(fontWeight: FontWeight.w800, color: Color(0xFF52657A)))),
+                        Expanded(flex: 2, child: Text('Stok Adedi', style: TextStyle(fontWeight: FontWeight.w800, color: Color(0xFF52657A)))),
+                      ]),
+                    ),
+                    ...stocks.map((item) => Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 10),
+                          decoration: const BoxDecoration(border: Border(top: BorderSide(color: Color(0xFFE7EDF3)))),
+                          child: Row(children: [
+                            Expanded(flex: 4, child: Row(children: [
+                              const Icon(Icons.inventory_2_outlined, color: Color(0xFF2F80ED), size: 19),
+                              const SizedBox(width: 10),
+                              Expanded(child: Text(item.productName, style: const TextStyle(fontWeight: FontWeight.w800))),
+                            ])),
+                            Expanded(flex: 2, child: Text('${_WarehouseManagementScreenState._quantity(item.quantity)} ${item.unit}', style: const TextStyle(fontWeight: FontWeight.w800))),
+                          ]),
+                        )),
+                  ],
+                ),
+              ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 8, 16, 14),
+              child: Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  OutlinedButton.icon(onPressed: onAddStock, icon: const Icon(Icons.add_rounded), label: const Text('Stok Ekle')),
+                  OutlinedButton.icon(onPressed: onReturnToMain, icon: const Icon(Icons.inventory_2_outlined), label: const Text('Ana Depoya İade')),
+                  OutlinedButton.icon(onPressed: onTransferToVehicle, icon: const Icon(Icons.swap_horiz_rounded), label: const Text('Başka Araca Transfer')),
+                ],
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+class _WarehouseEmpty extends StatelessWidget {
+  const _WarehouseEmpty();
+  @override
+  Widget build(BuildContext context) => Container(
+        padding: const EdgeInsets.all(32),
+        decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(14), border: Border.all(color: const Color(0xFFE1E8F0))),
+        child: const Center(child: Text('Aramaya uygun araç deposu bulunamadı.')),
+      );
 }
 
 class _Panel extends StatelessWidget {

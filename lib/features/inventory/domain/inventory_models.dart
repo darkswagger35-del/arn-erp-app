@@ -65,6 +65,11 @@ class StockMovementItem {
     required this.quantity,
     required this.createdAt,
     this.notes,
+    this.serviceRequestId,
+    this.technicianName,
+    this.customerName,
+    this.customerPhone,
+    this.serviceType,
   });
 
   final String id;
@@ -74,8 +79,26 @@ class StockMovementItem {
   final double quantity;
   final DateTime createdAt;
   final String? notes;
+  final String? serviceRequestId;
+  final String? technicianName;
+  final String? customerName;
+  final String? customerPhone;
+  final String? serviceType;
 
-  factory StockMovementItem.fromMap(Map<String, dynamic> map) {
+  String get displayTechnician {
+    final explicit = technicianName?.trim() ?? '';
+    if (explicit.isNotEmpty) return explicit;
+    const suffix = ' Araç Deposu';
+    if (warehouseName.endsWith(suffix)) {
+      return warehouseName.substring(0, warehouseName.length - suffix.length);
+    }
+    return '—';
+  }
+
+  factory StockMovementItem.fromMap(
+    Map<String, dynamic> map, {
+    Map<String, dynamic>? context,
+  }) {
     final product = map['products'] is Map<String, dynamic>
         ? map['products'] as Map<String, dynamic>
         : const <String, dynamic>{};
@@ -90,6 +113,11 @@ class StockMovementItem {
       quantity: (map['quantity'] as num?)?.toDouble() ?? 0,
       createdAt: DateTime.tryParse(map['created_at']?.toString() ?? '') ?? DateTime.now(),
       notes: map['notes']?.toString(),
+      serviceRequestId: map['service_request_id']?.toString(),
+      technicianName: context?['technician_name']?.toString(),
+      customerName: context?['customer_name']?.toString(),
+      customerPhone: context?['customer_phone']?.toString(),
+      serviceType: context?['service_type']?.toString(),
     );
   }
 }

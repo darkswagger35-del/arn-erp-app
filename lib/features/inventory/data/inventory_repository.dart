@@ -114,11 +114,87 @@ class InventoryRepository {
   }) async {
     dynamic query = _client
         .from('stock_movements')
-        .select('id, movement_type, quantity, notes, created_at, product_id, products(name), warehouses(name)');
+        .select('id, movement_type, quantity, notes, created_at, product_id, service_request_id, products(name), warehouses(name)');
     if (start != null) query = query.gte('created_at', start.toUtc().toIso8601String());
     if (end != null) query = query.lt('created_at', end.toUtc().toIso8601String());
     if (productId != null && productId.isNotEmpty) query = query.eq('product_id', productId);
-    final rows = await query.order('created_at', ascending: false).limit(1000);
-    return List<Map<String, dynamic>>.from(rows).map(StockMovementItem.fromMap).toList(growable: false);
+    final rawRows = List<Map<String, dynamic>>.from(
+      await query.order('created_at', ascending: false).limit(1000),
+    );
+
+    final requestIds = rawRows
+        .map((row) => row['service_request_id']?.toString() ?? '')
+        .where((id) => id.isNotEmpty)
+        .toSet()
+        .toList(growable: false);
+    final contexts = <String, Map<String, dynamic>>{};
+
+    if (requestIds.isNotEmpty) {
+      try {
+        final requestRows = List<Map<String, dynamic>>.from(
+          await _client
+              .from('service_requests')
+              .select('id, customer_id, assigned_technician_id, service_type')
+              .inFilter('id', requestIds),
+        );
+        final customerIds = requestRows
+            .map((row) => row['customer_id']?.toString() ?? '')
+            .where((id) => id.isNotEmpty)
+            .toSet()
+            .toList(growable: false);
+        final technicianIds = requestRows
+            .map((row) => row['assigned_technician_id']?.toString() ?? '')
+            .where((id) => id.isNotEmpty)
+            .toSet()
+            .toList(growable: false);
+
+        final customers = <String, Map<String, dynamic>>{};
+        if (customerIds.isNotEmpty) {
+          final rows = List<Map<String, dynamic>>.from(
+            await _client
+                .from('customers')
+                .select('id, full_name, phone')
+                .inFilter('id', customerIds),
+          );
+          for (final row in rows) {
+            customers[row['id'].toString()] = row;
+          }
+        }
+
+        final technicians = <String, String>{};
+        if (technicianIds.isNotEmpty) {
+          final rows = List<Map<String, dynamic>>.from(
+            await _client
+                .from('profiles')
+                .select('id, full_name')
+                .inFilter('id', technicianIds),
+          );
+          for (final row in rows) {
+            technicians[row['id'].toString()] = row['full_name']?.toString() ?? '';
+          }
+        }
+
+        for (final request in requestRows) {
+          final requestId = request['id']?.toString() ?? '';
+          if (requestId.isEmpty) continue;
+          final customer = customers[request['customer_id']?.toString() ?? ''];
+          contexts[requestId] = {
+            'customer_name': customer?['full_name'],
+            'customer_phone': customer?['phone'],
+            'technician_name': technicians[request['assigned_technician_id']?.toString() ?? ''],
+            'service_type': request['service_type'],
+          };
+        }
+    
+      } catch (_) {
+        // Hareket listesi yine çalışsın; servis/müşteri zenginleştirmesi opsiyoneldir.
+      }
+    }
+    return rawRows
+        .map((row) => StockMovementItem.fromMap(
+              row,
+              context: contexts[row['service_request_id']?.toString() ?? ''],
+            ))
+        .toList(growable: false);
   }
 }
