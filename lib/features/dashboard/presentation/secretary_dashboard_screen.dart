@@ -10,6 +10,7 @@ import '../../maintenance/data/maintenance_repository.dart';
 import '../../operations/data/operations_providers.dart';
 import '../../secretary_crm/data/secretary_crm_provider.dart';
 import '../../secretary_crm/data/secretary_crm_repository.dart';
+import '../../settings/data/company_app_settings.dart';
 
 class SecretaryDashboardScreen extends ConsumerStatefulWidget {
   const SecretaryDashboardScreen({super.key});
@@ -31,6 +32,12 @@ class _SecretaryDashboardData {
   final List<SecretaryLead> latestLeads;
   final List<MaintenanceReminder> maintenance;
   final Map<String, num> performance;
+}
+
+class _DashboardColumn {
+  const _DashboardColumn(this.flex, this.child);
+  final int flex;
+  final Widget child;
 }
 
 class _SecretaryDashboardScreenState extends ConsumerState<SecretaryDashboardScreen> {
@@ -89,6 +96,9 @@ class _SecretaryDashboardScreenState extends ConsumerState<SecretaryDashboardScr
   Widget build(BuildContext context) {
     final auth = ref.watch(authControllerProvider);
     final name = auth.profile?.fullName.trim().isNotEmpty == true ? auth.profile!.fullName.trim() : 'Sekreter';
+    final panelSettings = ref.watch(companyAppSettingsProvider).asData?.value ??
+        const CompanyAppSettings(companyId: '');
+    bool showPanel(String key) => panelSettings.panelVisible('secretary', key);
     return ManagementShell(
       role: AppRole.secretary,
       title: 'Günaydın, $name 👋',
@@ -113,33 +123,44 @@ class _SecretaryDashboardScreenState extends ConsumerState<SecretaryDashboardScr
             child: ListView(
               padding: const EdgeInsets.all(20),
               children: [
-                _topMetrics(data, jobs),
-                const SizedBox(height: 16),
+                if (showPanel('metrics')) _topMetrics(data, jobs),
+                if (showPanel('metrics') &&
+                    (showPanel('today_jobs') ||
+                        showPanel('latest_leads') ||
+                        showPanel('follow_up') ||
+                        showPanel('upcoming_maintenance') ||
+                        showPanel('quick_actions') ||
+                        showPanel('performance')))
+                  const SizedBox(height: 16),
                 LayoutBuilder(builder: (context, c) {
                   final wide = c.maxWidth >= 1160;
-                  final left = Column(children: [
-                    _jobsPanel(jobs),
-                    const SizedBox(height: 16),
-                    _latestLeadsPanel(data.latestLeads),
-                  ]);
-                  final center = Column(children: [
-                    _followUpPanel(data.counts),
-                    const SizedBox(height: 16),
-                    _maintenancePanel(data.maintenance),
-                  ]);
-                  final right = Column(children: [
-                    _quickActions(),
-                    const SizedBox(height: 16),
-                    _performancePanel(data),
-                  ]);
-                  if (!wide) return Column(children: [left, const SizedBox(height: 16), center, const SizedBox(height: 16), right]);
-                  return Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                    Expanded(flex: 6, child: left),
-                    const SizedBox(width: 16),
-                    Expanded(flex: 4, child: center),
-                    const SizedBox(width: 16),
-                    Expanded(flex: 4, child: right),
-                  ]);
+                  final leftItems = <Widget>[
+                    if (showPanel('today_jobs')) _jobsPanel(jobs),
+                    if (showPanel('latest_leads')) _latestLeadsPanel(data.latestLeads),
+                  ];
+                  final centerItems = <Widget>[
+                    if (showPanel('follow_up')) _followUpPanel(data.counts),
+                    if (showPanel('upcoming_maintenance')) _maintenancePanel(data.maintenance),
+                  ];
+                  final rightItems = <Widget>[
+                    if (showPanel('quick_actions')) _quickActions(),
+                    if (showPanel('performance')) _performancePanel(data),
+                  ];
+                  final columns = <_DashboardColumn>[
+                    if (leftItems.isNotEmpty) _DashboardColumn(6, Column(children: _verticalGaps(leftItems, 16))),
+                    if (centerItems.isNotEmpty) _DashboardColumn(4, Column(children: _verticalGaps(centerItems, 16))),
+                    if (rightItems.isNotEmpty) _DashboardColumn(4, Column(children: _verticalGaps(rightItems, 16))),
+                  ];
+                  if (columns.isEmpty) return const SizedBox.shrink();
+                  if (!wide) {
+                    return Column(children: _verticalGaps(columns.map((e) => e.child).toList(), 16));
+                  }
+                  final rowChildren = <Widget>[];
+                  for (var i = 0; i < columns.length; i++) {
+                    if (i > 0) rowChildren.add(const SizedBox(width: 16));
+                    rowChildren.add(Expanded(flex: columns[i].flex, child: columns[i].child));
+                  }
+                  return Row(crossAxisAlignment: CrossAxisAlignment.start, children: rowChildren);
                 }),
               ],
             ),
@@ -147,6 +168,15 @@ class _SecretaryDashboardScreenState extends ConsumerState<SecretaryDashboardScr
         },
       ),
     );
+  }
+
+  List<Widget> _verticalGaps(List<Widget> items, double gap) {
+    final result = <Widget>[];
+    for (var index = 0; index < items.length; index++) {
+      if (index > 0) result.add(SizedBox(height: gap));
+      result.add(items[index]);
+    }
+    return result;
   }
 
   Widget _topMetrics(_SecretaryDashboardData data, List<Map<String, dynamic>> jobs) {

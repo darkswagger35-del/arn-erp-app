@@ -4,6 +4,7 @@ import 'package:go_router/go_router.dart';
 
 import '../auth/app_role.dart';
 import '../auth/auth_provider.dart';
+import '../../features/settings/data/company_app_settings.dart';
 
 class ManagementShell extends ConsumerWidget {
   const ManagementShell({
@@ -39,6 +40,11 @@ class ManagementShell extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final isDesktop = MediaQuery.sizeOf(context).width >= 980;
     final authState = ref.watch(authControllerProvider);
+    final appSettings = ref.watch(companyAppSettingsProvider).asData?.value;
+    final lightBackground = _hexColor(
+      appSettings?.appearanceString('content_background', fallback: '#F4F7FB') ?? '#F4F7FB',
+      const Color(0xFFF4F7FB),
+    );
     final displayName = (authState.profile?.fullName.trim().isNotEmpty ?? false)
         ? authState.profile!.fullName.trim()
         : role.label;
@@ -52,7 +58,7 @@ class ManagementShell extends ConsumerWidget {
     );
 
     final content = ColoredBox(
-      color: dark ? const Color(0xFF07111B) : const Color(0xFFF4F7FB),
+      color: dark ? const Color(0xFF07111B) : lightBackground,
       child: Column(
         children: [
           _ManagementHeader(
@@ -108,12 +114,12 @@ class ManagementShell extends ConsumerWidget {
 
     if (!isDesktop) {
       return Scaffold(
-        backgroundColor: dark ? const Color(0xFF07111B) : const Color(0xFFF4F7FB),
+        backgroundColor: dark ? const Color(0xFF07111B) : lightBackground,
         drawer: Drawer(width: 250, child: sidebar),
         body: SafeArea(
           child: Builder(
             builder: (innerContext) => ColoredBox(
-            color: dark ? const Color(0xFF07111B) : const Color(0xFFF4F7FB),
+            color: dark ? const Color(0xFF07111B) : lightBackground,
             child: Column(
               children: [
                 _ManagementHeader(
@@ -172,7 +178,7 @@ class ManagementShell extends ConsumerWidget {
     }
 
     return Scaffold(
-      backgroundColor: dark ? const Color(0xFF07111B) : const Color(0xFFF4F7FB),
+      backgroundColor: dark ? const Color(0xFF07111B) : lightBackground,
       body: Row(
         children: [
           SizedBox(width: 220, child: sidebar),
@@ -345,6 +351,19 @@ class _ManagementSidebar extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    final appSettings = ref.watch(companyAppSettingsProvider).asData?.value;
+    final sidebarColor = _hexColor(
+      appSettings?.appearanceString('sidebar_color', fallback: '#071C2D') ?? '#071C2D',
+      const Color(0xFF071C2D),
+    );
+    final accentColor = _hexColor(
+      appSettings?.appearanceString('accent_color', fallback: '#0D6578') ?? '#0D6578',
+      const Color(0xFF0D6578),
+    );
+    final accentIconColor = _hexColor(
+      appSettings?.appearanceString('accent_icon_color', fallback: '#22D3DC') ?? '#22D3DC',
+      const Color(0xFF22D3DC),
+    );
     final technicianItems = <_SideItem>[
             _SideItem(Icons.dashboard_outlined, 'Ana Sayfa', dashboardRoute),
             const _SideItem(Icons.calendar_month_outlined, 'Günlük İşler', '/technician/jobs'),
@@ -392,7 +411,7 @@ class _ManagementSidebar extends ConsumerWidget {
     ];
 
     return ColoredBox(
-      color: const Color(0xFF071C2D),
+      color: sidebarColor,
       child: SafeArea(
         child: Column(
           children: [
@@ -421,24 +440,24 @@ class _ManagementSidebar extends ConsumerWidget {
                 padding: const EdgeInsets.symmetric(horizontal: 8),
                 children: role == AppRole.manager || role == AppRole.admin
                     ? [
-                        _sideTile(context, _SideItem(Icons.dashboard_outlined, 'Ana Panel', dashboardRoute)),
-                        _sideTile(context, _SideItem(Icons.people_alt_outlined, 'Müşteriler', '$prefix/customers')),
+                        _sideTile(context, _SideItem(Icons.dashboard_outlined, 'Ana Panel', dashboardRoute), accentColor: accentColor, accentIconColor: accentIconColor),
+                        _sideTile(context, _SideItem(Icons.people_alt_outlined, 'Müşteriler', '$prefix/customers'), accentColor: accentColor, accentIconColor: accentIconColor),
                         const SizedBox(height: 4),
-                        ...managerGroups.map((group) => _groupTile(context, group)),
+                        ...managerGroups.map((group) => _groupTile(context, group, accentColor: accentColor, accentIconColor: accentIconColor)),
                       ]
                     : role == AppRole.secretary
                         ? [
-                            _sideTile(context, _SideItem(Icons.dashboard_outlined, 'Ana Sayfa', dashboardRoute)),
-                            _sideTile(context, _SideItem(Icons.people_alt_outlined, 'Müşteriler', '$prefix/customers')),
-                            _sideTile(context, _SideItem(Icons.home_repair_service_outlined, 'Servis Talepleri', '$prefix/service-requests')),
-                            _sideTile(context, _SideItem(Icons.fact_check_outlined, 'Takip Listesi', '$prefix/follow-ups')),
-                            _sideTile(context, _SideItem(Icons.notifications_active_outlined, 'Bakımı Yaklaşanlar', '$prefix/maintenance')),
-                            _sideTile(context, _SideItem(Icons.person_outline_rounded, 'Aktif Müşteriler', '$prefix/customers')),
-                            _sideTile(context, _SideItem(Icons.schedule_rounded, 'Takiptekiler', '$prefix/follow-ups/tracking')),
-                            _sideTile(context, _SideItem(Icons.cancel_outlined, 'Kapandı', '$prefix/follow-ups/closed')),
-                            _sideTile(context, _SideItem(Icons.bar_chart_rounded, 'Raporlar', '$prefix/reports')),
+                            _sideTile(context, _SideItem(Icons.dashboard_outlined, 'Ana Sayfa', dashboardRoute), accentColor: accentColor, accentIconColor: accentIconColor),
+                            _sideTile(context, _SideItem(Icons.people_alt_outlined, 'Müşteriler', '$prefix/customers'), accentColor: accentColor, accentIconColor: accentIconColor),
+                            _sideTile(context, _SideItem(Icons.home_repair_service_outlined, 'Servis Talepleri', '$prefix/service-requests'), accentColor: accentColor, accentIconColor: accentIconColor),
+                            _sideTile(context, _SideItem(Icons.fact_check_outlined, 'Takip Listesi', '$prefix/follow-ups'), accentColor: accentColor, accentIconColor: accentIconColor),
+                            _sideTile(context, _SideItem(Icons.notifications_active_outlined, 'Bakımı Yaklaşanlar', '$prefix/maintenance'), accentColor: accentColor, accentIconColor: accentIconColor),
+                            _sideTile(context, _SideItem(Icons.person_outline_rounded, 'Aktif Müşteriler', '$prefix/customers'), accentColor: accentColor, accentIconColor: accentIconColor),
+                            _sideTile(context, _SideItem(Icons.schedule_rounded, 'Takiptekiler', '$prefix/follow-ups/tracking'), accentColor: accentColor, accentIconColor: accentIconColor),
+                            _sideTile(context, _SideItem(Icons.cancel_outlined, 'Kapandı', '$prefix/follow-ups/closed'), accentColor: accentColor, accentIconColor: accentIconColor),
+                            _sideTile(context, _SideItem(Icons.bar_chart_rounded, 'Raporlar', '$prefix/reports'), accentColor: accentColor, accentIconColor: accentIconColor),
                           ]
-                        : technicianItems.map((item) => _sideTile(context, item)).toList(),
+                        : technicianItems.map((item) => _sideTile(context, item, accentColor: accentColor, accentIconColor: accentIconColor)).toList(),
               ),
             ),
             const Divider(height: 1, color: Color(0xFF17364A)),
@@ -478,19 +497,19 @@ class _ManagementSidebar extends ConsumerWidget {
     );
   }
 
-  Widget _sideTile(BuildContext context, _SideItem item, {bool nested = false}) {
+  Widget _sideTile(BuildContext context, _SideItem item, {bool nested = false, required Color accentColor, required Color accentIconColor}) {
     final selected = _selected(item.route);
     return Padding(
       padding: EdgeInsets.fromLTRB(nested ? 12 : 0, 2, 0, 2),
       child: Material(
-        color: selected ? const Color(0xFF0D6578) : Colors.transparent,
+        color: selected ? accentColor : Colors.transparent,
         borderRadius: BorderRadius.circular(11),
         child: ListTile(
           dense: true,
           visualDensity: const VisualDensity(vertical: -1),
           minLeadingWidth: 24,
           leading: Icon(item.icon, size: nested ? 18 : 20,
-              color: selected ? const Color(0xFF22D3DC) : const Color(0xFFC4D1DC)),
+              color: selected ? accentIconColor : const Color(0xFFC4D1DC)),
           title: Text(item.label,
               style: TextStyle(
                 color: selected ? Colors.white : const Color(0xFFD5E0E8),
@@ -503,7 +522,7 @@ class _ManagementSidebar extends ConsumerWidget {
     );
   }
 
-  Widget _groupTile(BuildContext context, _SideGroup group) {
+  Widget _groupTile(BuildContext context, _SideGroup group, {required Color accentColor, required Color accentIconColor}) {
     final active = group.children.any((item) => _selected(item.route));
     return Theme(
       data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
@@ -514,20 +533,28 @@ class _ManagementSidebar extends ConsumerWidget {
         childrenPadding: EdgeInsets.zero,
         dense: true,
         leading: Icon(group.icon, size: 20,
-            color: active ? const Color(0xFF22D3DC) : const Color(0xFFC4D1DC)),
+            color: active ? accentIconColor : const Color(0xFFC4D1DC)),
         title: Text(group.label,
             style: TextStyle(
               color: active ? Colors.white : const Color(0xFFD5E0E8),
               fontWeight: FontWeight.w800,
               fontSize: 13,
             )),
-        iconColor: const Color(0xFF22D3DC),
+        iconColor: accentIconColor,
         collapsedIconColor: const Color(0xFF7F93A4),
-        children: group.children.map((item) => _sideTile(context, item, nested: true)).toList(),
+        children: group.children.map((item) => _sideTile(context, item, nested: true, accentColor: accentColor, accentIconColor: accentIconColor)).toList(),
       ),
     );
   }
 
+}
+
+Color _hexColor(String value, Color fallback) {
+  final cleaned = value.trim().replaceFirst('#', '');
+  if (cleaned.length != 6 && cleaned.length != 8) return fallback;
+  final parsed = int.tryParse(cleaned, radix: 16);
+  if (parsed == null) return fallback;
+  return Color(cleaned.length == 6 ? 0xFF000000 | parsed : parsed);
 }
 
 class _SideGroup {

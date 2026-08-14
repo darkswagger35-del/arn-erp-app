@@ -20,7 +20,6 @@ class NotificationCenterScreen extends ConsumerWidget {
       role: currentRole,
       title: 'Bildirimler',
       subtitle: 'Servis, tahsilat ve sistem bildirimlerini tek ekrandan yönetin.',
-      dark: true,
       actions: [
         TextButton.icon(
           onPressed: () async {
@@ -185,7 +184,7 @@ class _NotificationTile extends StatelessWidget {
                     if (!item.isRead) Container(width: 8, height: 8, decoration: const BoxDecoration(color: Color(0xFF22C7D4), shape: BoxShape.circle)),
                   ]),
                   const SizedBox(height: 4),
-                  Text(item.message, style: const TextStyle(color: Color(0xFFC0CED9))),
+                  Text(item.message, style: const TextStyle(color: Color(0xFF607086))),
                   const SizedBox(height: 6),
                   Text(DateFormat('dd.MM.yyyy HH:mm', 'tr_TR').format(item.createdAt.toLocal()), style: const TextStyle(color: Color(0xFF71879A), fontSize: 11)),
                 ])),

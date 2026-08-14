@@ -144,24 +144,27 @@ class CompanyAppSettings {
   static const Map<String, dynamic> defaultPanelVisibility = {
     'admin': {
       'summary': true,
-      'recent_services': true,
+      'technician_performance': true,
+      'secretary_performance': true,
       'today_schedule': true,
       'recent_payments': true,
-      'announcements': false,
+      'quick_access': true,
     },
     'secretary': {
       'metrics': true,
-      'today_summary': true,
-      'recent_services': true,
-      'quick_actions': true,
+      'today_jobs': true,
+      'latest_leads': true,
+      'follow_up': true,
       'upcoming_maintenance': true,
+      'quick_actions': true,
+      'performance': true,
     },
     'technician': {
       'metrics': true,
-      'today_jobs': true,
-      'next_job': true,
-      'route': true,
-      'recent_completed': true,
+      'morning_preparation': true,
+      'performance': true,
+      'products': true,
+      'jobs': true,
     },
   };
 
@@ -222,6 +225,20 @@ class CompanyAppSettings {
     }
     return fallback;
   }
+
+  Map<String, dynamic> get appearanceConfig {
+    final raw = panelVisibility['_appearance'];
+    if (raw is Map) return Map<String, dynamic>.from(raw);
+    return const <String, dynamic>{};
+  }
+
+  String appearanceString(String key, {required String fallback}) {
+    final value = appearanceConfig[key]?.toString().trim();
+    return value == null || value.isEmpty ? fallback : value;
+  }
+
+  bool appearanceBool(String key, {bool fallback = false}) =>
+      _boolValue(appearanceConfig[key], fallback);
 
   int get backupKeepCount {
     final raw = backupPolicy['keep_count'];

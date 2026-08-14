@@ -1,6 +1,7 @@
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:intl/intl.dart';
@@ -13,6 +14,8 @@ import '../../../core/auth/auth_provider.dart';
 import '../../service_requests/data/models/service_request_model.dart';
 import '../../service_requests/presentation/providers/service_request_providers.dart';
 import '../../settings/data/company_app_settings.dart';
+import '../../settings/data/settings_repository_provider.dart';
+import '../../settings/domain/settings_model.dart';
 import '../../../core/auth/app_role.dart';
 import '../../../core/widgets/management_shell.dart';
 
@@ -341,6 +344,25 @@ class _ServiceDocumentsScreenState
 
   Future<Uint8List> _buildPdf(ServiceRequestModel request) async {
     final settings = await ref.read(companyAppSettingsProvider.future);
+    CompanySettingsModel companySettings;
+    try {
+      companySettings = await ref.read(settingsRepositoryProvider).loadSettings();
+    } catch (_) {
+      companySettings = CompanySettingsModel(
+        companyId: settings.companyId,
+        companyName: '',
+      );
+    }
+    pw.MemoryImage? companyLogo;
+    final logoUrl = companySettings.logoUrl?.trim() ?? '';
+    if (companySettings.pdfShowLogo && logoUrl.isNotEmpty) {
+      try {
+        final data = await NetworkAssetBundle(Uri.parse(logoUrl)).load(logoUrl);
+        companyLogo = pw.MemoryImage(data.buffer.asUint8List());
+      } catch (_) {
+        companyLogo = null;
+      }
+    }
     final form = settings.serviceFormConfig;
     bool show(String key, {bool fallback = true}) {
       final value = form[key];
@@ -482,18 +504,28 @@ class _ServiceDocumentsScreenState
             pw.SizedBox(height: 16),
           ];
         case 'signatures':
-          final customerSignature = show('show_customer_signature');
-          final technicianSignature = show('show_technician_signature');
-          if (!customerSignature && !technicianSignature) {
+          final signaturesEnabled = companySettings.pdfShowSignature;
+          final customerSignature =
+              signaturesEnabled && show('show_customer_signature');
+          final technicianSignature =
+              signaturesEnabled && show('show_technician_signature');
+          final seal = companySettings.pdfShowSeal;
+          if (!customerSignature && !technicianSignature && !seal) {
             return const <pw.Widget>[];
           }
+          final boxWidth = seal && customerSignature && technicianSignature
+              ? 145.0
+              : 180.0;
           return [
             pw.SizedBox(height: 18),
             pw.Row(
               mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
               children: [
-                if (customerSignature) _pdfSignature('Müşteri İmzası'),
-                if (technicianSignature) _pdfSignature('Teknisyen İmzası'),
+                if (customerSignature)
+                  _pdfSignature('Müşteri İmzası', width: boxWidth),
+                if (technicianSignature)
+                  _pdfSignature('Teknisyen İmzası', width: boxWidth),
+                if (seal) _pdfSignature('Kaşe / Onay', width: boxWidth),
               ],
             ),
           ];
@@ -524,20 +556,45 @@ class _ServiceDocumentsScreenState
         build: (context) => [
           pw.Row(
             mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
+            crossAxisAlignment: pw.CrossAxisAlignment.start,
             children: [
-              pw.Column(
-                crossAxisAlignment: pw.CrossAxisAlignment.start,
-                children: [
-                  pw.Text(
-                    settings.serviceFormTitle.trim().isEmpty
-                        ? 'ARN SU ARITMA SERVİS FORMU'
-                        : settings.serviceFormTitle.trim(),
-                    style: pw.TextStyle(fontSize: 20, fontWeight: pw.FontWeight.bold),
-                  ),
-                  pw.SizedBox(height: 4),
-                  pw.Text('Servis Tamamlama Formu'),
-                ],
+              pw.Expanded(
+                child: pw.Row(
+                  crossAxisAlignment: pw.CrossAxisAlignment.start,
+                  children: [
+                    if (companyLogo != null) ...[
+                      pw.Container(
+                        width: 72,
+                        height: 52,
+                        alignment: pw.Alignment.centerLeft,
+                        child: pw.Image(companyLogo!, fit: pw.BoxFit.contain),
+                      ),
+                      pw.SizedBox(width: 12),
+                    ],
+                    pw.Expanded(
+                      child: pw.Column(
+                        crossAxisAlignment: pw.CrossAxisAlignment.start,
+                        children: [
+                          pw.Text(
+                            settings.serviceFormTitle.trim().isEmpty
+                                ? 'ARN SU ARITMA SERVİS FORMU'
+                                : settings.serviceFormTitle.trim(),
+                            style: pw.TextStyle(fontSize: 20, fontWeight: pw.FontWeight.bold),
+                          ),
+                          pw.SizedBox(height: 4),
+                          pw.Text('Servis Tamamlama Formu'),
+                          if (companySettings.companyName.trim().isNotEmpty)
+                            pw.Text(
+                              companySettings.companyName.trim(),
+                              style: const pw.TextStyle(fontSize: 9, color: PdfColors.grey700),
+                            ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
               ),
+              pw.SizedBox(width: 12),
               pw.Text('Form No: ${request.id ?? '-'}',
                   style: const pw.TextStyle(fontSize: 9)),
             ],
@@ -587,9 +644,9 @@ class _ServiceDocumentsScreenState
     );
   }
 
-  pw.Widget _pdfSignature(String label) {
+  pw.Widget _pdfSignature(String label, {double width = 180}) {
     return pw.SizedBox(
-      width: 180,
+      width: width,
       child: pw.Column(
         children: [
           pw.Container(

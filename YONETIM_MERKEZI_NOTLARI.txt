@@ -1,0 +1,27 @@
+MOTUS - YONETIM MERKEZI / STEP 9
+
+Bu sürümde Yönetim bölümü beyaz/profesyonel bir yönetim merkezine dönüştürüldü.
+
+Yönetilen alanlar:
+- Kullanıcılar: rol, hesap, aktif/pasif, kullanıcı işlemleri
+- Excel: içeri/dışarı aktarım araçlarına hızlı erişim
+- Bildirimler: bildirim merkezi + teknisyen atama bildirimi
+- Firma & Marka: firma bilgileri ve servis formu logosu
+- Panel Görünümü: sol menü rengi, vurgu rengi, içerik arka planı
+- Kullanıcı & Yetkiler: sekreter/tekniker yetki matrisi
+- Servis: aktif servis türleri, tekniker ürün/tahsilat yetkileri, kapatma zorunlulukları
+- Müşteri & Bakım: bakım süresi ve müşteri zorunlu alanları
+- Stok & Tahsilat: otomatik stok, eksi stok, ödeme yöntemleri ve ödeme kuralları
+- Hazır Mesajlar: geliyorum, randevu, tamamlandı mesaj şablonları
+- Servis Formu/PDF: logo, kaşe, imza ve form alanları
+- Rol Bazlı Ana Panel: yönetici/sekreter/tekniker ana panel bloklarını aç/kapat
+- Veri & Excel: veri araçlarına erişim
+- Yedekleme ve geri yükleme
+- Güvenlik / işlem geçmişi
+
+Notlar:
+- Panel görünüm ayarları kaydedildiğinde uygulamanın yönetim kabuğuna uygulanır.
+- Rol bazlı panel görünürlükleri artık gerçek ana panel bloklarını açıp kapatır.
+- Servis formu logosu Supabase Storage üzerinden kalıcı saklanır; PDF oluşturulurken güncel erişim URL'si kullanılır.
+- Akıllı Rota Planla algoritmasına dokunulmadı.
+- İşlevi uygulama tarafına bağlı olmayan sahte WhatsApp/SMS/e-posta, kritik stok ve rota ayarları bu ekrandan çıkarıldı.

@@ -9,6 +9,7 @@ import '../../../core/auth/app_role.dart';
 import '../../../core/widgets/management_shell.dart';
 import '../../finance/data/finance_providers.dart';
 import '../../operations/data/operations_providers.dart';
+import '../../settings/data/company_app_settings.dart';
 
 enum _DashboardPeriod { day, week, month }
 
@@ -224,6 +225,10 @@ class _AdminDashboardScreenState extends ConsumerState<AdminDashboardScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final panelSettings = ref.watch(companyAppSettingsProvider).asData?.value ??
+        const CompanyAppSettings(companyId: '');
+    bool showPanel(String key) => panelSettings.panelVisible('admin', key);
+
     return ManagementShell(
       role: AppRole.admin,
       title: 'Ana Panel',
@@ -290,86 +295,106 @@ class _AdminDashboardScreenState extends ConsumerState<AdminDashboardScreen> {
               physics: const AlwaysScrollableScrollPhysics(),
               padding: const EdgeInsets.fromLTRB(18, 16, 18, 26),
               children: [
-                _SummaryCards(
-                  bundle: bundle,
-                  loading: snapshot.connectionState == ConnectionState.waiting,
-                ),
-                const SizedBox(height: 14),
-                LayoutBuilder(
-                  builder: (context, constraints) {
-                    final technician = _StaffPerformancePanel(
-                      title: 'Bugünkü Tekniker Performansı',
-                      staff: bundle.technicianPerformance,
-                      staffLabel: 'Tekniker',
-                      countLabel: 'Toplam İş',
-                      onOpenAll: () => context.go('/manager/reports'),
-                      onOpenRow: (_) => context.go('/manager/service-planning'),
-                    );
-                    final secretary = _StaffPerformancePanel(
-                      title: 'Bugünkü Sekreter Performansı',
-                      staff: bundle.secretaryPerformance,
-                      staffLabel: 'Sekreter',
-                      countLabel: 'Alınan İş',
-                      onOpenAll: () => context.go('/manager/reports'),
-                      onOpenRow: (_) => context.go('/manager/reports'),
-                    );
-                    final program = _DailyProgramPanel(
-                      rows: bundle.technicianPerformance,
-                    );
-
-                    if (constraints.maxWidth >= 1120) {
-                      return Row(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Expanded(child: technician),
-                          const SizedBox(width: 12),
-                          Expanded(child: secretary),
-                          const SizedBox(width: 12),
-                          Expanded(child: program),
-                        ],
-                      );
-                    }
-                    return Column(
-                      children: [
-                        technician,
-                        const SizedBox(height: 12),
-                        secretary,
-                        const SizedBox(height: 12),
-                        program,
-                      ],
-                    );
-                  },
-                ),
-                const SizedBox(height: 14),
-                LayoutBuilder(
-                  builder: (context, constraints) {
-                    final payments = _PaymentsPanel(rows: bundle.payments);
-                    final quick = const _QuickAccessPanel();
-                    if (constraints.maxWidth >= 900) {
-                      return Row(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Expanded(flex: 5, child: payments),
-                          const SizedBox(width: 12),
-                          Expanded(flex: 6, child: quick),
-                        ],
-                      );
-                    }
-                    return Column(
-                      children: [
-                        payments,
-                        const SizedBox(height: 12),
-                        quick,
-                      ],
-                    );
-                  },
-                ),
+                if (showPanel('summary'))
+                  _SummaryCards(
+                    bundle: bundle,
+                    loading: snapshot.connectionState == ConnectionState.waiting,
+                  ),
+                if (showPanel('summary') &&
+                    (showPanel('technician_performance') ||
+                        showPanel('secretary_performance') ||
+                        showPanel('today_schedule')))
+                  const SizedBox(height: 14),
+                if (showPanel('technician_performance') ||
+                    showPanel('secretary_performance') ||
+                    showPanel('today_schedule'))
+                  LayoutBuilder(
+                    builder: (context, constraints) {
+                      final panels = <Widget>[
+                        if (showPanel('technician_performance'))
+                          _StaffPerformancePanel(
+                            title: 'Bugünkü Tekniker Performansı',
+                            staff: bundle.technicianPerformance,
+                            staffLabel: 'Tekniker',
+                            countLabel: 'Toplam İş',
+                            onOpenAll: () => context.go('/manager/reports'),
+                            onOpenRow: (_) => context.go('/manager/service-planning'),
+                          ),
+                        if (showPanel('secretary_performance'))
+                          _StaffPerformancePanel(
+                            title: 'Bugünkü Sekreter Performansı',
+                            staff: bundle.secretaryPerformance,
+                            staffLabel: 'Sekreter',
+                            countLabel: 'Alınan İş',
+                            onOpenAll: () => context.go('/manager/reports'),
+                            onOpenRow: (_) => context.go('/manager/reports'),
+                          ),
+                        if (showPanel('today_schedule'))
+                          _DailyProgramPanel(rows: bundle.technicianPerformance),
+                      ];
+                      if (constraints.maxWidth >= 1120) {
+                        return Row(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: _withHorizontalGaps(panels, 12)
+                              .map((item) => item is SizedBox
+                                  ? item
+                                  : Expanded(child: item))
+                              .toList(growable: false),
+                        );
+                      }
+                      return Column(children: _withVerticalGaps(panels, 12));
+                    },
+                  ),
+                if ((showPanel('technician_performance') ||
+                        showPanel('secretary_performance') ||
+                        showPanel('today_schedule')) &&
+                    (showPanel('recent_payments') || showPanel('quick_access')))
+                  const SizedBox(height: 14),
+                if (showPanel('recent_payments') || showPanel('quick_access'))
+                  LayoutBuilder(
+                    builder: (context, constraints) {
+                      final panels = <Widget>[
+                        if (showPanel('recent_payments'))
+                          _PaymentsPanel(rows: bundle.payments),
+                        if (showPanel('quick_access')) const _QuickAccessPanel(),
+                      ];
+                      if (constraints.maxWidth >= 900) {
+                        return Row(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: _withHorizontalGaps(panels, 12)
+                              .map((item) => item is SizedBox
+                                  ? item
+                                  : Expanded(child: item))
+                              .toList(growable: false),
+                        );
+                      }
+                      return Column(children: _withVerticalGaps(panels, 12));
+                    },
+                  ),
               ],
             ),
           );
         },
       ),
     );
+  }
+
+  List<Widget> _withHorizontalGaps(List<Widget> items, double gap) {
+    final result = <Widget>[];
+    for (var index = 0; index < items.length; index++) {
+      if (index > 0) result.add(SizedBox(width: gap));
+      result.add(items[index]);
+    }
+    return result;
+  }
+
+  List<Widget> _withVerticalGaps(List<Widget> items, double gap) {
+    final result = <Widget>[];
+    for (var index = 0; index < items.length; index++) {
+      if (index > 0) result.add(SizedBox(height: gap));
+      result.add(items[index]);
+    }
+    return result;
   }
 
   bool _isToday(DateTime value) => _isSameDay(value, DateTime.now());

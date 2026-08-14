@@ -8,6 +8,7 @@ import '../../../core/auth/auth_provider.dart';
 import '../../../core/widgets/management_shell.dart';
 import '../../service_execution/data/service_execution_providers.dart';
 import '../../service_execution/data/service_execution_repository.dart';
+import '../../settings/data/company_app_settings.dart';
 
 class TechnicianDashboardScreen extends ConsumerStatefulWidget {
   const TechnicianDashboardScreen({super.key});
@@ -87,6 +88,9 @@ class _TechnicianDashboardScreenState
     final auth = ref.watch(authControllerProvider);
     final fullName = auth.profile?.fullName.trim();
     final name = (fullName?.isNotEmpty ?? false) ? fullName! : 'Teknisyen';
+    final panelSettings = ref.watch(companyAppSettingsProvider).asData?.value ??
+        const CompanyAppSettings(companyId: '');
+    bool showPanel(String key) => panelSettings.panelVisible('technician', key);
 
     return ManagementShell(
       role: AppRole.technician,
@@ -146,7 +150,8 @@ class _TechnicianDashboardScreenState
             child: ListView(
               padding: const EdgeInsets.all(18),
               children: [
-                LayoutBuilder(
+                if (showPanel('metrics'))
+                  LayoutBuilder(
                   builder: (context, c) {
                     final width = c.maxWidth;
                     final count = width >= 1200 ? 5 : width >= 760 ? 3 : 1;
@@ -209,14 +214,19 @@ class _TechnicianDashboardScreenState
                     );
                   },
                 ),
-                const SizedBox(height: 16),
-                _MorningPreparationPanel(
-                  jobs: activeForDay,
-                  vehicleProducts: data.vehicleProducts,
-                  onOpenJobs: () => context.go('/technician/jobs'),
-                ),
-                const SizedBox(height: 16),
-                _Panel(
+                if (showPanel('metrics') && showPanel('morning_preparation'))
+                  const SizedBox(height: 16),
+                if (showPanel('morning_preparation'))
+                  _MorningPreparationPanel(
+                    jobs: activeForDay,
+                    vehicleProducts: data.vehicleProducts,
+                    onOpenJobs: () => context.go('/technician/jobs'),
+                  ),
+                if ((showPanel('metrics') || showPanel('morning_preparation')) &&
+                    showPanel('performance'))
+                  const SizedBox(height: 16),
+                if (showPanel('performance'))
+                  _Panel(
                   title: 'Günlük Performans Özeti',
                   subtitle:
                       DateFormat('dd MMMM yyyy, EEEE', 'tr_TR').format(_selectedDate),
@@ -262,36 +272,43 @@ class _TechnicianDashboardScreenState
                     },
                   ),
                 ),
-                const SizedBox(height: 16),
-                LayoutBuilder(
-                  builder: (context, c) {
-                    final products = _ProductsPanel(
-                      products: data.performance.productQuantities,
-                    );
-                    final jobs = _JobsPanel(
-                      title: _filterTitle,
-                      rows: _filteredRows(data),
-                      onOpenJobs: () => context.go('/technician/jobs'),
-                    );
-                    if (c.maxWidth < 920) {
-                      return Column(
+                if ((showPanel('metrics') ||
+                        showPanel('morning_preparation') ||
+                        showPanel('performance')) &&
+                    (showPanel('products') || showPanel('jobs')))
+                  const SizedBox(height: 16),
+                if (showPanel('products') || showPanel('jobs'))
+                  LayoutBuilder(
+                    builder: (context, c) {
+                      final products = _ProductsPanel(
+                        products: data.performance.productQuantities,
+                      );
+                      final jobs = _JobsPanel(
+                        title: _filterTitle,
+                        rows: _filteredRows(data),
+                        onOpenJobs: () => context.go('/technician/jobs'),
+                      );
+                      if (showPanel('products') && !showPanel('jobs')) return products;
+                      if (!showPanel('products') && showPanel('jobs')) return jobs;
+                      if (c.maxWidth < 920) {
+                        return Column(
+                          children: [
+                            products,
+                            const SizedBox(height: 14),
+                            jobs,
+                          ],
+                        );
+                      }
+                      return Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          products,
-                          const SizedBox(height: 14),
-                          jobs,
+                          Expanded(flex: 4, child: products),
+                          const SizedBox(width: 14),
+                          Expanded(flex: 6, child: jobs),
                         ],
                       );
-                    }
-                    return Row(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Expanded(flex: 4, child: products),
-                        const SizedBox(width: 14),
-                        Expanded(flex: 6, child: jobs),
-                      ],
-                    );
-                  },
-                ),
+                    },
+                  ),
               ],
             ),
           );

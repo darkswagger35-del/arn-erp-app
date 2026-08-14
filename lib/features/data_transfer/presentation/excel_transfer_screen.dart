@@ -546,7 +546,6 @@ class _ExcelTransferScreenState extends ConsumerState<ExcelTransferScreen> {
       role: AppRole.manager,
       title: 'Excel İçeri / Dışarı Aktar',
       subtitle: 'Müşteri ve işlem geçmişini Excel ile toplu yönetin.',
-      dark: true,
       child: SingleChildScrollView(
         padding: const EdgeInsets.all(20),
         child: Center(
@@ -589,9 +588,9 @@ class _ExcelTransferScreenState extends ConsumerState<ExcelTransferScreen> {
                   width: double.infinity,
                   padding: const EdgeInsets.all(18),
                   decoration: BoxDecoration(
-                    color: const Color(0xFF0D1A26),
+                    color: Colors.white,
                     borderRadius: BorderRadius.circular(14),
-                    border: Border.all(color: const Color(0xFF223241)),
+                    border: Border.all(color: const Color(0xFFE2E9F1)),
                   ),
                   child: const Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
@@ -648,7 +647,7 @@ class _TransferCard extends StatelessWidget {
                 width: 48,
                 height: 48,
                 decoration: BoxDecoration(
-                  color: const Color(0xFF12313B),
+                  color: const Color(0xFFE5F8FA),
                   borderRadius: BorderRadius.circular(12),
                 ),
                 child: Icon(icon, color: const Color(0xFF12B8C4)),
@@ -656,7 +655,7 @@ class _TransferCard extends StatelessWidget {
               const SizedBox(height: 14),
               Text(title, style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w900)),
               const SizedBox(height: 6),
-              Text(description, style: const TextStyle(color: Color(0xFFA6B5C4), height: 1.35)),
+              Text(description, style: const TextStyle(color: Color(0xFF6C7A90), height: 1.35)),
               const SizedBox(height: 18),
               SizedBox(
                 width: double.infinity,

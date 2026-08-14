@@ -48,6 +48,11 @@ class SettingsRepositoryImpl implements SettingsRepository {
         .eq('company_id', companyId)
         .maybeSingle();
 
+    final logoUrl = await _freshLogoUrl(
+      supabase,
+      companyResponse?['logo_url']?.toString(),
+    );
+
     return CompanySettingsModel(
       companyId: companyId,
       companyName: companyResponse?['name']?.toString() ?? '',
@@ -57,7 +62,7 @@ class SettingsRepositoryImpl implements SettingsRepository {
       taxOffice: companyResponse?['tax_office']?.toString(),
       taxNumber: companyResponse?['tax_number']?.toString(),
       address: companyResponse?['address']?.toString(),
-      logoUrl: companyResponse?['logo_url']?.toString(),
+      logoUrl: logoUrl,
       maintenanceReminderMonths:
           int.tryParse(
             settingsResponse?['maintenance_reminder_months']?.toString() ?? '',
@@ -118,7 +123,6 @@ class SettingsRepositoryImpl implements SettingsRepository {
           'tax_office': settings.taxOffice,
           'tax_number': settings.taxNumber,
           'address': settings.address,
-          'logo_url': settings.logoUrl,
         })
         .eq('id', companyId);
 
@@ -160,7 +164,7 @@ class SettingsRepositoryImpl implements SettingsRepository {
     final url = company?['logo_url']?.toString();
     await supabase.from('companies').update({'logo_url': null}).eq('id', companyId);
     if (url != null && url.isNotEmpty) {
-      final path = _pathFromUrl(url);
+      final path = _storedLogoPath(url);
       if (path != null) {
         final cleanPath = path.startsWith('company-logos/') ? path.substring('company-logos/'.length) : path;
         try { await supabase.storage.from('company-logos').remove([cleanPath]); } catch (_) {}
@@ -243,19 +247,24 @@ class SettingsRepositoryImpl implements SettingsRepository {
       final previousLogoUrl = currentCompany?['logo_url']?.toString();
       final previousPath = previousLogoUrl == null || previousLogoUrl.isEmpty
           ? null
-          : _pathFromUrl(previousLogoUrl);
-      final signedUrl = await storage.createSignedUrl(path, 60 * 60 * 24);
+          : _storedLogoPath(previousLogoUrl);
+      final signedUrl = await storage.createSignedUrl(path, 60 * 60);
 
       await supabase
           .from('companies')
-          .update({'logo_url': signedUrl})
+          .update({'logo_url': 'company-logos/$path'})
           .eq('id', companyId);
 
-      if (previousPath != null &&
-          previousPath.isNotEmpty &&
-          previousPath != path) {
+      final cleanPreviousPath = previousPath == null
+          ? null
+          : previousPath.startsWith('company-logos/')
+              ? previousPath.substring('company-logos/'.length)
+              : previousPath;
+      if (cleanPreviousPath != null &&
+          cleanPreviousPath.isNotEmpty &&
+          cleanPreviousPath != path) {
         try {
-          await storage.remove([previousPath]);
+          await storage.remove([cleanPreviousPath]);
         } on StorageException catch (_) {
           return signedUrl;
         }
@@ -303,7 +312,29 @@ class SettingsRepositoryImpl implements SettingsRepository {
     return 'bin';
   }
 
-  String? _pathFromUrl(String url) {
+  Future<String?> _freshLogoUrl(
+    SupabaseClient supabase,
+    String? stored,
+  ) async {
+    final value = stored?.trim() ?? '';
+    if (value.isEmpty) return null;
+    final path = _storedLogoPath(value);
+    if (path == null || path.isEmpty) return value;
+    final cleanPath = path.startsWith('company-logos/')
+        ? path.substring('company-logos/'.length)
+        : path;
+    try {
+      return await supabase.storage
+          .from('company-logos')
+          .createSignedUrl(cleanPath, 60 * 60);
+    } catch (_) {
+      return value.startsWith('http') ? value : null;
+    }
+  }
+
+  String? _storedLogoPath(String url) {
+    final trimmed = url.trim();
+    if (trimmed.startsWith('company-logos/')) return trimmed;
     try {
       final uri = Uri.parse(url);
       final pathSegments = uri.pathSegments;

@@ -83,10 +83,9 @@ class _UserManagementScreenState extends ConsumerState<UserManagementScreen> {
 
         return ManagementShell(
           role: AppRole.admin,
-          title: 'Tüm Kullanıcılar',
+          title: 'Kullanıcılar',
           subtitle: 'Sistemdeki kullanıcıları, rolleri ve erişimleri yönetin.',
-          dark: true,
-          actions: [
+              actions: [
             IconButton(
               tooltip: 'Yenile',
               onPressed: state.isLoading ? null : controller.loadUsers,
