@@ -296,6 +296,98 @@ class FinanceRepository {
     }
   }
 
+  /// Operasyon raporları için servis taleplerini doğrudan yükler.
+  /// Finans RPC'lerinden farklı olarak tamamlanamayan/iptal/başlanmayan işleri
+  /// de kaybetmeden raporlamaya dahil eder.
+  Future<List<Map<String, dynamic>>> serviceRequestOperations({
+    required DateTime start,
+    required DateTime end,
+  }) async {
+    const fields =
+        'id, status, service_type, planned_date, created_at, started_at, completed_at, '
+        'updated_at, assigned_technician_id, assigned_technician_name_snapshot, '
+        'created_by, rework_requested_at, replacement_service_request_id, '
+        'rework_source_service_request_id';
+    final startIso = start.toUtc().toIso8601String();
+    final endIso = end.toUtc().toIso8601String();
+
+    final plannedRows = List<Map<String, dynamic>>.from(
+      await _client
+          .from('service_requests')
+          .select(fields)
+          .gte('planned_date', startIso)
+          .lt('planned_date', endIso)
+          .order('planned_date', ascending: true)
+          .limit(5000),
+    );
+    final createdRows = List<Map<String, dynamic>>.from(
+      await _client
+          .from('service_requests')
+          .select(fields)
+          .gte('created_at', startIso)
+          .lt('created_at', endIso)
+          .order('created_at', ascending: true)
+          .limit(5000),
+    );
+
+    final byId = <String, Map<String, dynamic>>{};
+    for (final row in [...plannedRows, ...createdRows]) {
+      final id = row['id']?.toString() ?? '';
+      if (id.isNotEmpty) byId[id] = row;
+    }
+    // `deferred` satirlari sekretere aktarimdan kalan tarihsel kaynak
+    // kayitlaridir. Aktif planlanan is / tekniker performansi raporlarini
+    // sisirmemeleri icin operasyon raporu veri setinden cikarilirlar.
+    final rows = byId.values
+        .where((row) => row['status']?.toString() != 'deferred')
+        .toList(growable: false);
+    if (rows.isEmpty) return rows;
+
+    final profileIds = <String>{};
+    for (final row in rows) {
+      final technician = row['assigned_technician_id']?.toString() ?? '';
+      final creator = row['created_by']?.toString() ?? '';
+      if (technician.isNotEmpty) profileIds.add(technician);
+      if (creator.isNotEmpty) profileIds.add(creator);
+    }
+
+    final profiles = <String, Map<String, dynamic>>{};
+    if (profileIds.isNotEmpty) {
+      final profileRows = List<Map<String, dynamic>>.from(
+        await _client
+            .from('profiles')
+            .select('id, full_name, role')
+            .inFilter('id', profileIds.toList(growable: false)),
+      );
+      for (final profile in profileRows) {
+        profiles[profile['id'].toString()] = profile;
+      }
+    }
+
+    return rows.map((row) {
+      final technicianId = row['assigned_technician_id']?.toString() ?? '';
+      final creatorId = row['created_by']?.toString() ?? '';
+      final technician = profiles[technicianId] ?? const <String, dynamic>{};
+      final creator = profiles[creatorId] ?? const <String, dynamic>{};
+      final profileTechnicianName =
+          technician['full_name']?.toString().trim() ?? '';
+      final snapshotTechnicianName =
+          row['assigned_technician_name_snapshot']?.toString().trim() ?? '';
+      final creatorRole = creator['role']?.toString() ?? '';
+      return <String, dynamic>{
+        ...row,
+        'technician_name': profileTechnicianName.isNotEmpty
+            ? profileTechnicianName
+            : snapshotTechnicianName,
+        'creator_name': creator['full_name']?.toString().trim() ?? '',
+        'creator_role': creatorRole,
+        'secretary_name': creatorRole == 'secretary'
+            ? creator['full_name']?.toString().trim() ?? ''
+            : '',
+      };
+    }).toList(growable: false);
+  }
+
   Future<List<Map<String, dynamic>>> topProducts({
     required DateTime start,
     required DateTime end,

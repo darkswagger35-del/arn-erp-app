@@ -215,8 +215,16 @@ class _ServicePlanningScreenState extends ConsumerState<ServicePlanningScreen> {
               );
             }
 
+            // Takvim aktif operasyon ekranidir. `deferred` (sekretere aktarim) kayitlari
+            // eski/ertelenmis kaynak kayit olarak gecmiste saklanir; ancak ayni
+            // musterinin yeni planlanan isiyle birlikte burada tekrar gorunmemeli
+            // ve tekniker/toplam is sayilarini sisirmemelidir.
             final all = (snapshot.data ?? const <ServiceRequestModel>[])
-                .where((item) => item.plannedDate != null)
+                .where(
+                  (item) =>
+                      item.plannedDate != null &&
+                      item.status != ServiceRequestStatus.deferred,
+                )
                 .toList()
               ..sort((a, b) => a.plannedDate!.compareTo(b.plannedDate!));
 
@@ -1906,7 +1914,7 @@ String _statusLabel(ServiceRequestStatus status) {
     case ServiceRequestStatus.approved:
       return 'Atama Bekliyor';
     case ServiceRequestStatus.deferred:
-      return 'Tehir';
+      return 'Sekretere Aktarıldı';
   }
 }
 

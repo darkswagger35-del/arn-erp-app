@@ -39,6 +39,12 @@ abstract class ServiceRequestRepository {
 
   Future<void> reopenCancelledService({required String serviceRequestId});
 
+  Future<void> addToSecretaryFollowUp({
+    required String serviceRequestId,
+    required DateTime followUpAt,
+    String note = '',
+  });
+
   Future<String> sendOverdueToSecretary({
     required String serviceRequestId,
     String? secretaryId,

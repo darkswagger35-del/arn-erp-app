@@ -64,6 +64,7 @@ class _ReportsScreenState extends ConsumerState<ReportsScreen> {
 
     Map<String, dynamic> staffPerformance = const <String, dynamic>{};
     List<Map<String, dynamic>> topProducts = const <Map<String, dynamic>>[];
+    List<Map<String, dynamic>> operationRows = const <Map<String, dynamic>>[];
     try {
       staffPerformance = await repo.staffPerformance(start: _start, end: _end);
     } catch (_) {
@@ -74,6 +75,12 @@ class _ReportsScreenState extends ConsumerState<ReportsScreen> {
     } catch (_) {
       // Ürün özeti yüklenemezse diğer rapor bölümleri çalışmaya devam eder.
     }
+    try {
+      operationRows =
+          await repo.serviceRequestOperations(start: _start, end: _end);
+    } catch (_) {
+      // Operasyon detayı yüklenemese bile finans raporu açılmaya devam eder.
+    }
 
     return _ReportBundle(
       summary: summary,
@@ -81,6 +88,7 @@ class _ReportsScreenState extends ConsumerState<ReportsScreen> {
       payments: payments,
       staffPerformance: staffPerformance,
       topProducts: topProducts,
+      operationRows: operationRows,
     );
   }
 
@@ -150,6 +158,7 @@ class _ReportsScreenState extends ConsumerState<ReportsScreen> {
           final technicians = _buildTechnicianStaff(
             bundle.staffPerformance,
             bundle.payments,
+            bundle.operationRows,
           );
           final secretaries = _buildSecretaryStaff(
             bundle.staffPerformance,
@@ -214,6 +223,12 @@ class _ReportsScreenState extends ConsumerState<ReportsScreen> {
                     ],
                   );
                 },
+              ),
+              const SizedBox(height: 14),
+              _OperationsOverviewCard(
+                rows: bundle.operationRows,
+                start: _start,
+                end: _end,
               ),
               const SizedBox(height: 14),
               _LeadershipSummaryCard(
@@ -319,8 +334,14 @@ class _ReportsScreenState extends ConsumerState<ReportsScreen> {
                 _ReportDetailLine('Tamamlanan İş', '${row.completedCount}'),
                 _ReportDetailLine('İptal Edilen', '${row.unsuccessfulCount}'),
               ] else ...[
+                _ReportDetailLine('Toplam Planlanan İş', '${row.openedCount}'),
                 _ReportDetailLine('Tamamlanan Servis', '${row.completedCount}'),
-                _ReportDetailLine('Başarısız / İptal', '${row.unsuccessfulCount}'),
+                _ReportDetailLine(
+                  'Tamamlanamadı / Gidilemedi',
+                  '${row.couldNotCompleteCount}',
+                ),
+                _ReportDetailLine('İptal Edilen', '${row.cancelledCount}'),
+                _ReportDetailLine('Tekniker Girmedi', '${row.notStartedCount}'),
               ],
               _ReportDetailLine('Ürün Adedi', _qty(row.productCount)),
               _ReportDetailLine(
@@ -390,28 +411,103 @@ class _ReportsScreenState extends ConsumerState<ReportsScreen> {
   List<_StaffRow> _buildTechnicianStaff(
     Map<String, dynamic> performance,
     List<Map<String, dynamic>> payments,
+    List<Map<String, dynamic>> operationRows,
   ) {
     final collected = _staffCollections(payments, role: 'Teknisyen');
+    final operational = <String, _TechnicianOperationStats>{};
+    for (final service in operationRows) {
+      final status = service['status']?.toString() ?? '';
+      // `deferred` aktif bir servis sonucu degil; sekretere aktarimdan kalan
+      // eski plan kaydidir. Takvim ve ana panel ile ayni sayiyi vermesi icin
+      // tekniker performans toplamindan cikarilir.
+      if (status == 'deferred') continue;
+
+      final planned = _parseLocal(service['planned_date']);
+      if (planned == null || planned.isBefore(_start) || !planned.isBefore(_end)) {
+        continue;
+      }
+      final name = service['technician_name']?.toString().trim() ?? '';
+      if (name.isEmpty) continue;
+      final stats = operational.putIfAbsent(
+        name,
+        () => _TechnicianOperationStats(),
+      );
+      stats.total++;
+      if (status == 'completed') {
+        stats.completed++;
+      } else if (status == 'could_not_complete') {
+        stats.couldNotComplete++;
+      } else if (status == 'cancelled' || status == 'canceled') {
+        stats.cancelled++;
+      }
+      if (status == 'assigned' && service['started_at'] == null) {
+        stats.notStarted++;
+      }
+    }
+
     final raw = performance['technicians'];
     final rows = raw is List ? raw : const <dynamic>[];
-    return rows.map((item) {
+    final result = <_StaffRow>[];
+    final seen = <String>{};
+    for (final item in rows) {
       final row = Map<String, dynamic>.from(item as Map);
       final name = row['full_name']?.toString().trim() ?? '';
-      return _StaffRow(
-        name: name.isEmpty ? 'İsimsiz Tekniker' : name,
+      final resolvedName = name.isEmpty ? 'İsimsiz Tekniker' : name;
+      seen.add(resolvedName);
+      final stats = operational[resolvedName] ?? _TechnicianOperationStats();
+      result.add(_StaffRow(
+        name: resolvedName,
         role: 'Teknisyen',
         ranking: _num(row['ranking']).round(),
-        openedCount: 0,
-        completedCount: _num(row['completed_services']).round(),
-        unsuccessfulCount: _num(row['unsuccessful_services']).round(),
+        openedCount: stats.total,
+        completedCount: stats.completed,
+        unsuccessfulCount: stats.couldNotComplete + stats.cancelled,
+        couldNotCompleteCount: stats.couldNotComplete,
+        cancelledCount: stats.cancelled,
+        notStartedCount: stats.notStarted,
+        transferredCount: stats.transferred,
         productCount: _num(row['product_count']),
         turnover: _num(row['turnover']),
-        collected: collected[name] ?? 0,
+        collected: collected[resolvedName] ?? 0,
         topProduct: row['top_product']?.toString() ?? '-',
         topServiceType: '-',
         averageAmount: _num(row['average_service_amount']),
-      );
-    }).toList(growable: false);
+      ));
+    }
+
+    for (final entry in operational.entries) {
+      if (seen.contains(entry.key)) continue;
+      final stats = entry.value;
+      result.add(_StaffRow(
+        name: entry.key,
+        role: 'Teknisyen',
+        ranking: 999,
+        openedCount: stats.total,
+        completedCount: stats.completed,
+        unsuccessfulCount: stats.couldNotComplete + stats.cancelled,
+        couldNotCompleteCount: stats.couldNotComplete,
+        cancelledCount: stats.cancelled,
+        notStartedCount: stats.notStarted,
+        transferredCount: stats.transferred,
+        productCount: 0,
+        turnover: 0,
+        collected: collected[entry.key] ?? 0,
+        topProduct: '-',
+        topServiceType: '-',
+        averageAmount: 0,
+      ));
+    }
+    result.sort((a, b) {
+      final byTotal = b.openedCount.compareTo(a.openedCount);
+      if (byTotal != 0) return byTotal;
+      final byTurnover = b.turnover.compareTo(a.turnover);
+      if (byTurnover != 0) return byTurnover;
+      return a.name.compareTo(b.name);
+    });
+    return [
+      for (var i = 0; i < result.length; i++)
+        result[i].copyWith(ranking: i + 1),
+    ];
   }
 
   List<_StaffRow> _buildSecretaryStaff(
@@ -431,6 +527,10 @@ class _ReportsScreenState extends ConsumerState<ReportsScreen> {
         openedCount: _num(row['opened_services']).round(),
         completedCount: _num(row['completed_services']).round(),
         unsuccessfulCount: _num(row['cancelled_services']).round(),
+        couldNotCompleteCount: 0,
+        cancelledCount: _num(row['cancelled_services']).round(),
+        notStartedCount: 0,
+        transferredCount: 0,
         productCount: _num(row['product_count']),
         turnover: _num(row['turnover']),
         collected: collected[name] ?? 0,
@@ -457,6 +557,12 @@ class _ReportsScreenState extends ConsumerState<ReportsScreen> {
       result[name] = (result[name] ?? 0) + _num(payment['amount']);
     }
     return result;
+  }
+
+  static DateTime? _parseLocal(Object? value) {
+    if (value == null) return null;
+    final parsed = DateTime.tryParse(value.toString());
+    return parsed?.toLocal();
   }
 
   static int _completedCount(List<Map<String, dynamic>> rows) {
@@ -503,6 +609,7 @@ class _ReportBundle {
     required this.payments,
     required this.staffPerformance,
     required this.topProducts,
+    required this.operationRows,
   });
 
   const _ReportBundle.empty()
@@ -510,13 +617,357 @@ class _ReportBundle {
         details = const <Map<String, dynamic>>[],
         payments = const <Map<String, dynamic>>[],
         staffPerformance = const <String, dynamic>{},
-        topProducts = const <Map<String, dynamic>>[];
+        topProducts = const <Map<String, dynamic>>[],
+        operationRows = const <Map<String, dynamic>>[];
 
   final Map<String, dynamic> summary;
   final List<Map<String, dynamic>> details;
   final List<Map<String, dynamic>> payments;
   final Map<String, dynamic> staffPerformance;
   final List<Map<String, dynamic>> topProducts;
+  final List<Map<String, dynamic>> operationRows;
+}
+
+class _OperationsOverviewCard extends StatefulWidget {
+  const _OperationsOverviewCard({
+    required this.rows,
+    required this.start,
+    required this.end,
+  });
+
+  final List<Map<String, dynamic>> rows;
+  final DateTime start;
+  final DateTime end;
+
+  @override
+  State<_OperationsOverviewCard> createState() =>
+      _OperationsOverviewCardState();
+}
+
+class _OperationsOverviewCardState extends State<_OperationsOverviewCard> {
+  bool _monthly = false;
+
+  DateTime? _localDate(Object? value) {
+    if (value == null) return null;
+    return DateTime.tryParse(value.toString())?.toLocal();
+  }
+
+  bool _inside(DateTime? value) =>
+      value != null &&
+      !value.isBefore(widget.start) &&
+      value.isBefore(widget.end);
+
+  DateTime _bucketKey(DateTime value) => _monthly
+      ? DateTime(value.year, value.month)
+      : DateTime(value.year, value.month, value.day);
+
+  List<_OperationBucket> _buckets() {
+    final map = <DateTime, _OperationBucket>{};
+    _OperationBucket bucket(DateTime date) => map.putIfAbsent(
+          _bucketKey(date),
+          () => _OperationBucket(_bucketKey(date)),
+        );
+
+    // Bu rapor sadece plan tarihine göre çalışır. Bir işin sisteme hangi gün
+    // açıldığı burada ayrı bir "alınan iş" satırı üretmez. Böylece her dönem
+    // yalnızca o güne/aya gerçekten yazılmış servisleri ve sonuçlarını gösterir.
+    for (final row in widget.rows) {
+      final status = row['status']?.toString() ?? '';
+      // Sekretere aktarilan eski kaynak kaydi yeni servisle birlikte ikinci
+      // kez planlanan is gibi sayilmaz. Takvim, Ana Panel ve Raporlar ayni
+      // operasyon kumesini kullanir.
+      if (status == 'deferred') continue;
+
+      final plannedAt = _localDate(row['planned_date']);
+      if (!_inside(plannedAt)) continue;
+
+      final target = bucket(plannedAt!);
+      target.planned++;
+
+      switch (status) {
+        case 'completed':
+          target.completed++;
+          break;
+        case 'could_not_complete':
+          target.couldNotComplete++;
+          break;
+        case 'cancelled':
+        case 'canceled':
+          target.cancelled++;
+          break;
+        case 'in_progress':
+          target.inProgress++;
+          break;
+      }
+
+      final technicianId =
+          row['assigned_technician_id']?.toString().trim() ?? '';
+      final started = row['started_at'] != null;
+
+      if (technicianId.isEmpty &&
+          (status == 'pending' ||
+              status == 'approved' ||
+              status == 'awaiting_approval')) {
+        target.unassigned++;
+      }
+
+      if (technicianId.isNotEmpty && status == 'assigned') {
+        if (started) {
+          target.inProgress++;
+        } else {
+          target.notStarted++;
+        }
+      }
+    }
+
+    final result = map.values.toList(growable: false);
+    result.sort((a, b) => a.period.compareTo(b.period));
+    return result;
+  }
+
+  _OperationBucket _total(List<_OperationBucket> rows) {
+    final total = _OperationBucket(widget.start);
+    for (final row in rows) {
+      total.planned += row.planned;
+      total.completed += row.completed;
+      total.couldNotComplete += row.couldNotComplete;
+      total.cancelled += row.cancelled;
+      total.notStarted += row.notStarted;
+      total.inProgress += row.inProgress;
+      total.unassigned += row.unassigned;
+      total.transferred += row.transferred;
+    }
+    return total;
+  }
+
+  String _periodLabel(DateTime date) => _monthly
+      ? DateFormat('MM.yyyy').format(date)
+      : DateFormat('dd.MM.yyyy').format(date);
+
+  @override
+  Widget build(BuildContext context) {
+    final rows = _buckets();
+    final total = _total(rows);
+    return Card(
+      clipBehavior: Clip.antiAlias,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(14, 12, 12, 8),
+            child: Row(
+              children: [
+                const Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'Operasyon Durum Raporu',
+                        style: TextStyle(
+                          color: Color(0xFF10243A),
+                          fontSize: 16,
+                          fontWeight: FontWeight.w900,
+                        ),
+                      ),
+                      SizedBox(height: 2),
+                      Text(
+                        'Seçilen güne/aya planlanan işlerin sonuçlarını gösterir.',
+                        style: TextStyle(
+                          color: Color(0xFF718096),
+                          fontSize: 10,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                _RoleToggle(
+                  selected: !_monthly,
+                  label: 'Gün Gün',
+                  onTap: () => setState(() => _monthly = false),
+                ),
+                const SizedBox(width: 6),
+                _RoleToggle(
+                  selected: _monthly,
+                  label: 'Ay Ay',
+                  onTap: () => setState(() => _monthly = true),
+                ),
+              ],
+            ),
+          ),
+          const Divider(height: 1),
+          Padding(
+            padding: const EdgeInsets.all(12),
+            child: Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                _OperationMiniMetric('Planlanan', total.planned),
+                _OperationMiniMetric('Tamamlanan', total.completed),
+                _OperationMiniMetric(
+                  'Tamamlanamadı',
+                  total.couldNotComplete,
+                ),
+                _OperationMiniMetric('İptal', total.cancelled),
+                _OperationMiniMetric('Tekniker Girmedi', total.notStarted),
+                _OperationMiniMetric('Devam Ediyor', total.inProgress),
+                _OperationMiniMetric('Atanmamış', total.unassigned),
+              ],
+            ),
+          ),
+          const Divider(height: 1),
+          if (rows.isEmpty)
+            const Padding(
+              padding: EdgeInsets.all(28),
+              child: Text(
+                'Seçilen dönemde operasyon kaydı bulunmuyor.',
+                textAlign: TextAlign.center,
+              ),
+            )
+          else
+            SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              child: SizedBox(
+                width: 1100,
+                child: Column(
+                  children: [
+                    const Padding(
+                      padding: EdgeInsets.symmetric(horizontal: 14, vertical: 9),
+                      child: Row(
+                        children: [
+                          SizedBox(
+                            width: 105,
+                            child: Text(
+                              'Dönem',
+                              style: TextStyle(
+                                fontSize: 9,
+                                color: Color(0xFF718096),
+                                fontWeight: FontWeight.w800,
+                              ),
+                            ),
+                          ),
+                          _OperationHeader('Planlanan'),
+                          _OperationHeader('Tamam.'),
+                          _OperationHeader('Tamamlanamadı'),
+                          _OperationHeader('İptal'),
+                          _OperationHeader('Tekniker Girmedi'),
+                          _OperationHeader('Devam Ediyor'),
+                          _OperationHeader('Atanmamış'),
+                        ],
+                      ),
+                    ),
+                    const Divider(height: 1),
+                    ...rows.map(
+                      (row) => Padding(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 14,
+                          vertical: 9,
+                        ),
+                        child: Row(
+                          children: [
+                            SizedBox(
+                              width: 105,
+                              child: Text(
+                                _periodLabel(row.period),
+                                style: const TextStyle(
+                                  fontWeight: FontWeight.w800,
+                                ),
+                              ),
+                            ),
+                            _OperationValue(row.planned),
+                            _OperationValue(row.completed),
+                            _OperationValue(row.couldNotComplete),
+                            _OperationValue(row.cancelled),
+                            _OperationValue(row.notStarted),
+                            _OperationValue(row.inProgress),
+                            _OperationValue(row.unassigned),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+class _OperationBucket {
+  _OperationBucket(this.period);
+
+  final DateTime period;
+  int planned = 0;
+  int completed = 0;
+  int couldNotComplete = 0;
+  int cancelled = 0;
+  int notStarted = 0;
+  int inProgress = 0;
+  int unassigned = 0;
+  int transferred = 0;
+}
+
+class _OperationMiniMetric extends StatelessWidget {
+  const _OperationMiniMetric(this.label, this.value);
+
+  final String label;
+  final int value;
+
+  @override
+  Widget build(BuildContext context) => Container(
+        padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 8),
+        decoration: BoxDecoration(
+          color: const Color(0xFFF5F9FC),
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(color: const Color(0xFFDCE7EF)),
+        ),
+        child: Text(
+          '$label: $value',
+          style: const TextStyle(
+            color: Color(0xFF26445E),
+            fontSize: 11,
+            fontWeight: FontWeight.w800,
+          ),
+        ),
+      );
+}
+
+class _OperationHeader extends StatelessWidget {
+  const _OperationHeader(this.label);
+  final String label;
+
+  @override
+  Widget build(BuildContext context) => SizedBox(
+        width: 118,
+        child: Text(
+          label,
+          textAlign: TextAlign.center,
+          style: const TextStyle(
+            fontSize: 9,
+            color: Color(0xFF718096),
+            fontWeight: FontWeight.w800,
+          ),
+        ),
+      );
+}
+
+class _OperationValue extends StatelessWidget {
+  const _OperationValue(this.value);
+  final int value;
+
+  @override
+  Widget build(BuildContext context) => SizedBox(
+        width: 118,
+        child: Text(
+          '$value',
+          textAlign: TextAlign.center,
+          style: const TextStyle(
+            color: Color(0xFF17324D),
+            fontWeight: FontWeight.w800,
+          ),
+        ),
+      );
 }
 
 class _ReportMetric extends StatelessWidget {
@@ -840,6 +1291,16 @@ class _MutableStaff {
   final Map<String, double> products = <String, double>{};
 }
 
+class _TechnicianOperationStats {
+  int total = 0;
+  int completed = 0;
+  int couldNotComplete = 0;
+  int cancelled = 0;
+  int notStarted = 0;
+  int inProgress = 0;
+  int transferred = 0;
+}
+
 class _StaffRow {
   const _StaffRow({
     required this.name,
@@ -848,6 +1309,10 @@ class _StaffRow {
     required this.openedCount,
     required this.completedCount,
     required this.unsuccessfulCount,
+    required this.couldNotCompleteCount,
+    required this.cancelledCount,
+    required this.notStartedCount,
+    required this.transferredCount,
     required this.productCount,
     required this.turnover,
     required this.collected,
@@ -862,12 +1327,35 @@ class _StaffRow {
   final int openedCount;
   final int completedCount;
   final int unsuccessfulCount;
+  final int couldNotCompleteCount;
+  final int cancelledCount;
+  final int notStartedCount;
+  final int transferredCount;
   final double productCount;
   final double turnover;
   final double collected;
   final String topProduct;
   final String topServiceType;
   final double averageAmount;
+
+  _StaffRow copyWith({int? ranking}) => _StaffRow(
+        name: name,
+        role: role,
+        ranking: ranking ?? this.ranking,
+        openedCount: openedCount,
+        completedCount: completedCount,
+        unsuccessfulCount: unsuccessfulCount,
+        couldNotCompleteCount: couldNotCompleteCount,
+        cancelledCount: cancelledCount,
+        notStartedCount: notStartedCount,
+        transferredCount: transferredCount,
+        productCount: productCount,
+        turnover: turnover,
+        collected: collected,
+        topProduct: topProduct,
+        topServiceType: topServiceType,
+        averageAmount: averageAmount,
+      );
 }
 
 class _StaffPerformanceCard extends StatefulWidget {
@@ -938,7 +1426,7 @@ class _StaffPerformanceCardState extends State<_StaffPerformanceCard> {
                 SizedBox(
                   width: 44,
                   child: Text(
-                    _secretaries ? 'Alınan' : 'Servis',
+                    _secretaries ? 'Alınan' : 'Toplam',
                     textAlign: TextAlign.center,
                     style: _tableHeaderStyle,
                   ),
@@ -946,7 +1434,7 @@ class _StaffPerformanceCardState extends State<_StaffPerformanceCard> {
                 SizedBox(
                   width: 48,
                   child: Text(
-                    _secretaries ? 'Tamam.' : 'Başarısız',
+                    _secretaries ? 'Tamam.' : 'Sorunlu',
                     textAlign: TextAlign.center,
                     style: _tableHeaderStyle,
                   ),
@@ -1022,7 +1510,7 @@ class _StaffPerformanceCardState extends State<_StaffPerformanceCard> {
                         SizedBox(
                           width: 44,
                           child: Text(
-                            '${_secretaries ? row.openedCount : row.completedCount}',
+                            '${row.openedCount}',
                             textAlign: TextAlign.center,
                             style: const TextStyle(fontWeight: FontWeight.w800),
                           ),

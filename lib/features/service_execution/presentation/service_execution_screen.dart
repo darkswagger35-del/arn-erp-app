@@ -32,6 +32,8 @@ class _ServiceExecutionScreenState
   List<Map<String, dynamic>> _products = const [];
   final Map<String, double> _quantities = {};
   final Map<String, double> _unitPrices = {};
+  final Map<String, TextEditingController> _formFieldControllers = {};
+  final Map<String, bool> _formFieldBooleans = {};
   bool _loading = true;
   bool _saving = false;
   String _paymentMethod = 'cash';
@@ -55,6 +57,9 @@ class _ServiceExecutionScreenState
     _extraFeeController.removeListener(_refreshAmounts);
     _serviceFeeController.dispose();
     _extraFeeController.dispose();
+    for (final controller in _formFieldControllers.values) {
+      controller.dispose();
+    }
     super.dispose();
   }
 
@@ -79,6 +84,7 @@ class _ServiceExecutionScreenState
         _descriptionController.text = _job?.description ?? '';
         _workController.text = _job?.completionNote ?? '';
         _appSettings = results[2] as CompanyAppSettings;
+        _prepareServiceFormFieldState(_job?.formValues ?? const <String, dynamic>{});
         if (!_appSettings.serviceRule('technician_can_collect_payment', fallback: true)) {
           _paymentMethod = 'open_account';
         } else {
@@ -166,6 +172,242 @@ class _ServiceExecutionScreenState
     return double.tryParse(controller.text.trim().replaceAll(',', '.')) ?? 0;
   }
 
+  bool _formFlag(String key, {bool fallback = false}) {
+    final raw = _appSettings.serviceFormConfig[key];
+    return raw is bool ? raw : fallback;
+  }
+
+  String _normalizedFieldType(Map<String, dynamic> field) {
+    final raw = field['type']?.toString().trim().toLowerCase() ?? '';
+    if (const {'text', 'multiline', 'number', 'date', 'time', 'select', 'boolean'}.contains(raw)) {
+      return raw;
+    }
+    final label = field['label']?.toString().toLowerCase() ?? '';
+    if (label.contains('tarih')) return 'date';
+    if (label.contains('saat')) return 'time';
+    if (label.contains('tds') || label.contains('basınç') || label.contains('basinc')) return 'number';
+    return 'text';
+  }
+
+  List<Map<String, dynamic>> get _serviceFormFields {
+    final fields = <Map<String, dynamic>>[];
+    if (_formFlag('show_tds_in')) {
+      fields.add({
+        'id': 'tds_in',
+        'label': 'TDS Giriş',
+        'type': 'number',
+        'placeholder': 'Örn. 350 ppm',
+        'required': false,
+        'enabled': true,
+        'show_on_panel': true,
+        'show_on_pdf': true,
+      });
+    }
+    if (_formFlag('show_tds_out')) {
+      fields.add({
+        'id': 'tds_out',
+        'label': 'TDS Çıkış',
+        'type': 'number',
+        'placeholder': 'Örn. 15 ppm',
+        'required': false,
+        'enabled': true,
+        'show_on_panel': true,
+        'show_on_pdf': true,
+      });
+    }
+    if (_formFlag('show_tank_pressure')) {
+      fields.add({
+        'id': 'tank_pressure',
+        'label': 'Tank Basıncı',
+        'type': 'number',
+        'placeholder': 'Örn. 7 PSI',
+        'required': false,
+        'enabled': true,
+        'show_on_panel': true,
+        'show_on_pdf': true,
+      });
+    }
+    final raw = _appSettings.serviceFormConfig['custom_fields'];
+    if (raw is List) {
+      for (final item in raw.whereType<Map>()) {
+        final field = Map<String, dynamic>.from(item);
+        if (field['enabled'] == false || field['show_on_panel'] == false) continue;
+        final id = field['id']?.toString().trim() ?? '';
+        if (id.isEmpty) continue;
+        fields.add(field);
+      }
+    }
+    return fields;
+  }
+
+  void _prepareServiceFormFieldState(Map<String, dynamic> existing) {
+    for (final controller in _formFieldControllers.values) {
+      controller.dispose();
+    }
+    _formFieldControllers.clear();
+    _formFieldBooleans.clear();
+    for (final field in _serviceFormFields) {
+      final id = field['id']?.toString() ?? '';
+      if (id.isEmpty) continue;
+      final type = _normalizedFieldType(field);
+      final current = existing[id];
+      if (type == 'boolean') {
+        _formFieldBooleans[id] = current == true || current?.toString().toLowerCase() == 'true';
+        continue;
+      }
+      var value = current?.toString() ?? '';
+      if (value.trim().isEmpty && type == 'date' && field['default_today'] == true) {
+        value = DateFormat('dd.MM.yyyy', 'tr_TR').format(DateTime.now());
+      }
+      _formFieldControllers[id] = TextEditingController(text: value);
+    }
+  }
+
+  Map<String, dynamic> get _serviceFormValues {
+    final values = <String, dynamic>{};
+    for (final field in _serviceFormFields) {
+      final id = field['id']?.toString() ?? '';
+      if (id.isEmpty) continue;
+      final type = _normalizedFieldType(field);
+      if (type == 'boolean') {
+        values[id] = _formFieldBooleans[id] ?? false;
+      } else {
+        values[id] = _formFieldControllers[id]?.text.trim() ?? '';
+      }
+    }
+    return values;
+  }
+
+  Future<void> _pickCustomDate(String id) async {
+    final controller = _formFieldControllers[id];
+    var initial = DateTime.now();
+    if (controller != null && controller.text.trim().isNotEmpty) {
+      try {
+        initial = DateFormat('dd.MM.yyyy', 'tr_TR').parseStrict(controller.text.trim());
+      } catch (_) {}
+    }
+    final picked = await showDatePicker(
+      context: context,
+      initialDate: initial,
+      firstDate: DateTime(2000),
+      lastDate: DateTime(2100),
+      locale: const Locale('tr', 'TR'),
+    );
+    if (picked == null || !mounted) return;
+    setState(() {
+      controller?.text = DateFormat('dd.MM.yyyy', 'tr_TR').format(picked);
+    });
+  }
+
+  Future<void> _pickCustomTime(String id) async {
+    final controller = _formFieldControllers[id];
+    final picked = await showTimePicker(
+      context: context,
+      initialTime: TimeOfDay.now(),
+    );
+    if (picked == null || !mounted) return;
+    setState(() {
+      controller?.text = '${picked.hour.toString().padLeft(2, '0')}:${picked.minute.toString().padLeft(2, '0')}';
+    });
+  }
+
+  Widget _serviceFormField(Map<String, dynamic> field) {
+    final id = field['id']?.toString() ?? '';
+    final label = field['label']?.toString().trim().isNotEmpty == true
+        ? field['label'].toString().trim()
+        : 'Alan';
+    final type = _normalizedFieldType(field);
+    final required = field['required'] == true;
+    final placeholder = field['placeholder']?.toString().trim() ?? '';
+    String? validator(String? value) {
+      if (required && (value ?? '').trim().isEmpty) return '$label zorunlu';
+      return null;
+    }
+
+    if (type == 'boolean') {
+      return SwitchListTile(
+        contentPadding: EdgeInsets.zero,
+        title: Text(label, style: const TextStyle(fontWeight: FontWeight.w700)),
+        subtitle: required ? const Text('Zorunlu alan') : null,
+        value: _formFieldBooleans[id] ?? false,
+        onChanged: (value) => setState(() => _formFieldBooleans[id] = value),
+      );
+    }
+
+    final controller = _formFieldControllers.putIfAbsent(id, TextEditingController.new);
+    if (type == 'select') {
+      final options = field['options'] is List
+          ? (field['options'] as List).map((e) => e.toString()).where((e) => e.trim().isNotEmpty).toList(growable: false)
+          : const <String>[];
+      final value = options.contains(controller.text) ? controller.text : null;
+      return DropdownButtonFormField<String>(
+        value: value,
+        decoration: InputDecoration(
+          labelText: label,
+          helperText: placeholder.isEmpty ? null : placeholder,
+          border: const OutlineInputBorder(),
+        ),
+        items: options.map((e) => DropdownMenuItem(value: e, child: Text(e))).toList(growable: false),
+        onChanged: (selected) => setState(() => controller.text = selected ?? ''),
+        validator: validator,
+      );
+    }
+
+    return TextFormField(
+      controller: controller,
+      readOnly: type == 'date' || type == 'time',
+      maxLines: type == 'multiline' ? 3 : 1,
+      keyboardType: type == 'number'
+          ? const TextInputType.numberWithOptions(decimal: true)
+          : TextInputType.text,
+      decoration: InputDecoration(
+        labelText: label,
+        helperText: placeholder.isEmpty ? null : placeholder,
+        suffixIcon: type == 'date'
+            ? const Icon(Icons.calendar_month_outlined)
+            : type == 'time'
+                ? const Icon(Icons.schedule_outlined)
+                : null,
+        border: const OutlineInputBorder(),
+      ),
+      onTap: type == 'date'
+          ? () => _pickCustomDate(id)
+          : type == 'time'
+              ? () => _pickCustomTime(id)
+              : null,
+      validator: validator,
+    );
+  }
+
+  Widget _serviceFormFieldsCard() {
+    final fields = _serviceFormFields;
+    if (fields.isEmpty) return const SizedBox.shrink();
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'Servis Formu Ek Bilgileri',
+              style: TextStyle(fontSize: 17, fontWeight: FontWeight.w900),
+            ),
+            const SizedBox(height: 4),
+            const Text(
+              'Buradaki alanlar yönetici Form Tasarımcısı ekranından belirlenir ve servis PDF’ine aktarılır.',
+              style: TextStyle(fontSize: 12, color: Color(0xFF66788A)),
+            ),
+            const SizedBox(height: 14),
+            for (var i = 0; i < fields.length; i++) ...[
+              _serviceFormField(fields[i]),
+              if (i != fields.length - 1) const SizedBox(height: 12),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+
   List<Map<String, dynamic>> get _selectedItems {
     return _products
         .where((product) => (_quantities[product['id'].toString()] ?? 0) > 0)
@@ -232,6 +474,7 @@ class _ServiceExecutionScreenState
           neighborhood: current.neighborhood,
           routeOrder: current.routeOrder,
           routePlanDate: current.routePlanDate,
+          formValues: current.formValues,
         );
       }
     });
@@ -291,6 +534,10 @@ class _ServiceExecutionScreenState
         description: _descriptionController.text,
         completionNote: _workController.text,
       );
+      await repository.updateServiceFormValues(
+        serviceRequestId: widget.serviceRequestId,
+        values: _serviceFormValues,
+      );
       await repository.completeService(
             serviceRequestId: widget.serviceRequestId,
             customerId: _job!.customerId,
@@ -312,6 +559,10 @@ class _ServiceExecutionScreenState
         serviceType: _selectedServiceType.value,
         description: _descriptionController.text,
         completionNote: _workController.text,
+      );
+      await repository.updateServiceFormValues(
+        serviceRequestId: widget.serviceRequestId,
+        values: _serviceFormValues,
       );
       if (!mounted) return;
       await _showCompletionActions();
@@ -343,6 +594,8 @@ class _ServiceExecutionScreenState
       extraAmount: _extraTotal,
       totalAmount: _grandTotal,
       paymentMethodLabel: _paymentMethodLabel(_paymentMethod),
+      serviceFormConfig: _appSettings.serviceFormConfig,
+      formValues: _serviceFormValues,
     );
   }
 
@@ -387,7 +640,29 @@ class _ServiceExecutionScreenState
       }
     }
     if (!mounted) return;
-    context.go('/technician/jobs?refresh=${DateTime.now().millisecondsSinceEpoch}');
+    await _returnToJobs('completed');
+  }
+
+  Future<void> _returnToJobs(String result) async {
+    if (!mounted) return;
+
+    // Bu ekran normalde Günlük İşler ekranından push ile açılıyor.
+    // İş kapanınca aynı route'u query parametresiyle zorla yeniden kurmak,
+    // özellikle dialog/snackbar kapanış animasyonu sürerken Flutter'ın
+    // InheritedElement bağımlılıklarını sökerken dependents.isEmpty
+    // assertion'ına düşebiliyor. Normal pop ile üst ekrana dönüp yenilemeyi
+    // üst ekranın yapmasına izin vermek daha güvenli.
+    final navigator = Navigator.of(context);
+    if (navigator.canPop()) {
+      navigator.pop(result);
+      return;
+    }
+
+    // Bildirim/deep-link gibi doğrudan açılışlarda geri dönülecek route
+    // olmayabilir. Dialog kapanışının bir frame tamamlanmasını bekleyip
+    // ardından Günlük İşler'e geç.
+    await Future<void>.delayed(const Duration(milliseconds: 200));
+    if (mounted) context.go('/technician/jobs');
   }
 
   Future<void> _markIncomplete() async {
@@ -414,18 +689,27 @@ class _ServiceExecutionScreenState
         ],
       ),
     );
+    // showDialog future'u pop anında döner; ters animasyonda TextField kısa bir
+    // süre daha controller'a bağlı kalabilir. Controller'ı hemen dispose
+    // etmek yerine dialog tamamen sökülsün diye kısa süre bekliyoruz.
+    await Future<void>.delayed(const Duration(milliseconds: 200));
     controller.dispose();
     if (reason == null || reason.isEmpty) return;
-    await ref
-        .read(serviceExecutionRepositoryProvider)
-        .markCouldNotComplete(
-          serviceRequestId: widget.serviceRequestId,
-          reason: reason,
-        );
-    if (!mounted) return;
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) context.go('/technician/jobs?refresh=${DateTime.now().millisecondsSinceEpoch}');
-    });
+    try {
+      await ref
+          .read(serviceExecutionRepositoryProvider)
+          .markCouldNotComplete(
+            serviceRequestId: widget.serviceRequestId,
+            reason: reason,
+          );
+      if (!mounted) return;
+      await _returnToJobs('could_not_complete');
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('İşlem kaydedilemedi: $error')),
+      );
+    }
   }
 
   String _plannedDateLabel(DateTime raw) {
@@ -709,6 +993,8 @@ class _ServiceExecutionScreenState
                 ),
               ),
             ),
+            const SizedBox(height: 12),
+            _serviceFormFieldsCard(),
             const SizedBox(height: 18),
             Text(
               'Kullanılan Ürünler',

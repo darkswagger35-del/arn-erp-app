@@ -16,6 +16,7 @@ class SecretaryLead {
     this.interestType,
     this.quotedPrice,
     this.referenceName,
+    this.serviceRequestId,
   });
 
   final String id;
@@ -32,6 +33,7 @@ class SecretaryLead {
   final String? interestType;
   final double? quotedPrice;
   final String? referenceName;
+  final String? serviceRequestId;
 
   factory SecretaryLead.fromMap(Map<String, dynamic> map) => SecretaryLead(
         id: map['id']?.toString() ?? '',
@@ -48,6 +50,7 @@ class SecretaryLead {
         interestType: map['interest_type']?.toString(),
         quotedPrice: (map['quoted_price'] as num?)?.toDouble(),
         referenceName: map['reference_name']?.toString(),
+        serviceRequestId: map['service_request_id']?.toString(),
       );
 }
 

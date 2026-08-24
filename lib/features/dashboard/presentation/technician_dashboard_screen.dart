@@ -41,14 +41,16 @@ class _TechnicianDashboardScreenState
     final results = await Future.wait([
       repo.getTechnicianJobs(''),
       repo.getCompletedJobsForDay(_selectedDate),
+      repo.getFailedJobsForDay(_selectedDate),
       repo.getTechnicianDayPerformance(_selectedDate),
       repo.getActiveProducts(ref.read(authControllerProvider).profile?.id ?? ''),
     ]);
     return _DashboardData(
       active: results[0] as List<TechnicianJob>,
       completed: results[1] as List<TechnicianJob>,
-      performance: results[2] as TechnicianDayPerformance,
-      vehicleProducts: results[3] as List<Map<String, dynamic>>,
+      failed: results[2] as List<TechnicianJob>,
+      performance: results[3] as TechnicianDayPerformance,
+      vehicleProducts: results[4] as List<Map<String, dynamic>>,
       referenceDay: _selectedDate,
     );
   }
@@ -140,7 +142,7 @@ class _TechnicianDashboardScreenState
               activeForDay.where((job) => job.status == 'in_progress').toList();
           final late = data.lateJobs;
           final tomorrow = data.tomorrowJobs;
-          final totalForDay = activeForDay.length + data.completed.length;
+          final totalForDay = activeForDay.length + data.completed.length + data.failed.length;
 
           return RefreshIndicator(
             onRefresh: () async {
@@ -185,6 +187,15 @@ class _TechnicianDashboardScreenState
                             '${_qty(data.performance.usedItemCount)} ürün • ${_money(data.performance.totalRevenue)}',
                         accent: const Color(0xFF19A866),
                         onTap: () => setState(() => _filter = 'completed'),
+                      ),
+                      _MetricCard(
+                        selected: _filter == 'failed',
+                        icon: Icons.report_problem_outlined,
+                        label: 'Yapılamayan / Aktarılan',
+                        value: '${data.failed.length}',
+                        subtitle: data.failed.isEmpty ? 'Kayıt yok' : 'Tamamlanamadı / iptal / aktarım',
+                        accent: const Color(0xFFE67E22),
+                        onTap: () => setState(() => _filter = 'failed'),
                       ),
                       _MetricCard(
                         selected: false,
@@ -320,6 +331,7 @@ class _TechnicianDashboardScreenState
   String get _filterTitle => switch (_filter) {
         'progress' => 'Devam Eden İşler',
         'completed' => 'Tamamlanan İşler',
+        'failed' => 'Yapılamayan / İptal / Aktarılan İşler',
         'late' => 'Geciken İşler',
         _ => 'Seçili Gün İşleri',
       };
@@ -334,12 +346,16 @@ class _TechnicianDashboardScreenState
           .map((j) => _JobRow(job: j))
           .toList();
     }
+    if (_filter == 'failed') {
+      return data.failed.map((j) => _JobRow(job: j, failed: true)).toList();
+    }
     if (_filter == 'late') {
       return data.lateJobs.map((j) => _JobRow(job: j)).toList();
     }
     return [
       ...data.activeForDay.map((j) => _JobRow(job: j)),
       ...data.completed.map((j) => _JobRow(job: j, completed: true)),
+      ...data.failed.map((j) => _JobRow(job: j, failed: true)),
     ];
   }
 
@@ -355,6 +371,7 @@ class _DashboardData {
   const _DashboardData({
     this.active = const <TechnicianJob>[],
     this.completed = const <TechnicianJob>[],
+    this.failed = const <TechnicianJob>[],
     this.vehicleProducts = const <Map<String, dynamic>>[],
     required this.performance,
     required this.referenceDay,
@@ -362,6 +379,7 @@ class _DashboardData {
 
   final List<TechnicianJob> active;
   final List<TechnicianJob> completed;
+  final List<TechnicianJob> failed;
   final List<Map<String, dynamic>> vehicleProducts;
   final TechnicianDayPerformance performance;
   final DateTime referenceDay;
@@ -663,9 +681,14 @@ class _ProductsPanel extends StatelessWidget {
 }
 
 class _JobRow {
-  const _JobRow({required this.job, this.completed = false});
+  const _JobRow({
+    required this.job,
+    this.completed = false,
+    this.failed = false,
+  });
   final TechnicianJob job;
   final bool completed;
+  final bool failed;
 }
 
 class _JobsPanel extends StatelessWidget {
@@ -707,10 +730,18 @@ class _JobsPanel extends StatelessWidget {
                         Icon(
                           row.completed
                               ? Icons.check_circle_rounded
-                              : Icons.radio_button_checked_rounded,
+                              : row.failed
+                                  ? (job.status == 'deferred'
+                                      ? Icons.forward_to_inbox_outlined
+                                      : job.status == 'cancelled'
+                                          ? Icons.cancel_outlined
+                                          : Icons.report_problem_outlined)
+                                  : Icons.radio_button_checked_rounded,
                           color: row.completed
                               ? const Color(0xFF19A866)
-                              : const Color(0xFF0AAFC0),
+                              : row.failed
+                                  ? const Color(0xFFE67E22)
+                                  : const Color(0xFF0AAFC0),
                           size: 20,
                         ),
                         const SizedBox(width: 10),
@@ -726,9 +757,23 @@ class _JobsPanel extends StatelessWidget {
                                     fontWeight: FontWeight.w900),
                               ),
                               Text(
-                                '${_serviceLabel(job.serviceType)}${job.plannedProductName.isEmpty ? '' : ' • ${job.plannedProductName}'}',
-                                style: const TextStyle(
-                                    color: Color(0xFF718096), fontSize: 12),
+                                [
+                                  _serviceLabel(job.serviceType),
+                                  if (job.plannedProductName.isNotEmpty)
+                                    job.plannedProductName,
+                                  if (row.failed)
+                                    job.status == 'deferred'
+                                        ? 'Sekretere Aktarıldı'
+                                        : job.status == 'cancelled'
+                                            ? 'İptal Edildi'
+                                            : 'Tamamlanamadı',
+                                ].join(' • '),
+                                style: TextStyle(
+                                  color: row.failed
+                                      ? const Color(0xFFE67E22)
+                                      : const Color(0xFF718096),
+                                  fontSize: 12,
+                                ),
                               ),
                             ],
                           ),

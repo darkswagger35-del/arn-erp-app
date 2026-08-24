@@ -1,0 +1,24 @@
+ARN ERP V13 - Tekniker Günlük İş Sayıları ve Operasyon Raporu
+24.08.2026
+
+1) Ana Panel / Tekniker performansı
+- Tamamlanamadı ve iptal edilen işler artık teknikerin günlük toplamından düşmez.
+- Örn. Engin'in aynı gün 1 tamamlanan + 1 tamamlanamayan + 1 iptal işi varsa Toplam İş = 3 görünür.
+- Tekniker performansında Tamamlanan / Tamamlanamadı / İptal / Bekleyen ayrı sayılır.
+- Günlük İş Programı aynı sonuç kolonlarını gösterir.
+- Arşiv/geçmiş kayıtlarında tekniker profil adı bulunamazsa assigned_technician_name_snapshot kullanılır.
+
+2) Raporlar / Operasyon Durum Raporu
+- Rapor ekranına yeni Operasyon Durum Raporu eklendi.
+- Gün Gün ve Ay Ay görünüm arasında geçiş yapılabilir.
+- Alınan İş, Planlanan, Tamamlanan, Tamamlanamadı, İptal, Tekniker Girmedi,
+  Atanmamış ve Sekretere Aktarıldı sayıları görünür.
+- "Tekniker Girmedi": tekniker atanmış, iş hâlâ assigned durumunda ve started_at boş olan iştir.
+- İç yeniden-planlama taslakları "Alınan İş" sayısını yapay olarak artırmaz.
+
+3) Raporlar / Personel Performansı
+- Teknikerlerde ilk sayı artık sadece tamamlanan servis değil, seçili dönemin toplam planlanan işidir.
+- Detaya tıklanınca Tamamlanan, Tamamlanamadı, İptal, Tekniker Girmedi ve Sekretere Aktarıldı ayrı görünür.
+
+Bu sürüm için ek Supabase SQL gerekmez. Mevcut servis kayıtlarındaki status, planned_date,
+started_at ve tekniker snapshot alanları okunur.

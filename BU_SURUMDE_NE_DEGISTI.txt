@@ -15,3 +15,17 @@ KURULUM
 - Takvimde işi olmayan teknisyenlerin gizlenmesi.
 - Müşteri adına tıklayınca müşteri kartının açılması.
 - İptal / tamamlanamadı nedeninin rozetten açılması.
+
+ARN ERP - 24.08.2026 V12 Tamamlanamadı / Sekretere Aktarım düzeltmesi
+
+- Eski geciken servis akışı, yönetici işi sekretere yeniden planlama için gönderdiğinde kaynak kaydı yanlışlıkla "Tamamlanamadı" yapıyordu. Bu ayrım düzeltildi.
+- Artık yalnız tekniker gerçekten "Tamamlanamadı" dediğinde servis could_not_complete olur.
+- Yönetici -> sekreter yeniden planlama ve tekniker -> sekretere aktar işlemleri "deferred / Sekretere Gönderildi" geçmişi olarak korunur.
+- Eski yanlış kayıtlar, yalnız rework/sekretere aktar izi varsa V10 SQL tarafından güvenli biçimde deferred durumuna taşınır.
+- Tekniker adı/atama geçmişi korunur; aktarılmış iş teknikerin seçili gün geçmişinde "Sekretere Aktarıldı" olarak görülebilir.
+- Servis Talepleri ekranında eski yanlış kayıtlar SQL çalıştırılmadan önce bile gerçek "Tamamlanamadı" sayacına dahil edilmez; sekreter akışı rozetiyle ayrılır.
+- Sekreter ekranında kaynak kayıt + yeni taslak çift görünmesin diye RLS seçme kuralı güncellendi.
+
+KURULUM
+- Supabase > SQL Editor içinde SUPABASE_V10_TAMAMLANAMADI_AKTARIM_FIX.sql dosyasını bir kez çalıştırın.
+- Ardından uygulamada yenileyin.

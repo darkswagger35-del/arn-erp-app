@@ -61,81 +61,16 @@ class ServiceRequestRepositoryImpl implements ServiceRequestRepository {
       }
     }
 
-    var requests = (response as List<dynamic>)
+    final requests = (response as List<dynamic>)
         .map(
           (item) => ServiceRequestModel.fromMap(item as Map<String, dynamic>),
         )
         .toList();
 
-    requests = await _hideSupersededFailedRequests(requests);
+    // Tamamlanamayan / iptal edilen kayıtlar operasyon geçmişidir; yeni servis
+    // açılmış olsa bile listeden saklanmaz. Böylece sekreter ve yönetici eski
+    // işlemi, teknikerini ve notlarını sonradan da görebilir.
     return _enrichRequests(requests);
-  }
-
-  /// Yeniden servis açılmış eski "Tamamlanamadı / İptal Edildi" kayıtlarını
-  /// operasyon listelerinden kaldırırız. Veritabanındaki eski kayıt silinmez;
-  /// müşteri kartında geçmiş/not olarak görünmeye devam eder.
-  Future<List<ServiceRequestModel>> _hideSupersededFailedRequests(
-    List<ServiceRequestModel> requests,
-  ) async {
-    final failed = requests
-        .where((r) => r.status == ServiceRequestStatus.couldNotComplete || r.status == ServiceRequestStatus.cancelled)
-        .toList(growable: false);
-    if (failed.isEmpty) return requests;
-
-    final customerIds = failed
-        .map((r) => r.customerId)
-        .where((id) => id.isNotEmpty)
-        .toSet()
-        .toList(growable: false);
-    if (customerIds.isEmpty) return requests;
-
-    try {
-      dynamic query = _client
-          .from('service_requests')
-          .select('id, customer_id, status, created_at')
-          .inFilter('customer_id', customerIds)
-          .inFilter('status', const ['pending', 'assigned', 'in_progress', 'completed']);
-
-      final currentUser = _client.auth.currentUser;
-      if (currentUser != null) {
-        try {
-          final profile = await _client
-              .from('profiles')
-              .select('role')
-              .eq('id', currentUser.id)
-              .maybeSingle();
-          if (profile?['role']?.toString() == 'secretary') {
-            query = query.eq('created_by', currentUser.id);
-          }
-        } catch (_) {}
-      }
-
-      final newerRows = List<Map<String, dynamic>>.from(await query);
-      bool hasNewer(ServiceRequestModel old) {
-        final oldCreated = old.createdAt ?? DateTime.fromMillisecondsSinceEpoch(0);
-        return newerRows.any((row) {
-          if (row['customer_id']?.toString() != old.customerId) return false;
-          final id = row['id']?.toString();
-          if (id != null && id == old.id) return false;
-          final created = DateTime.tryParse(row['created_at']?.toString() ?? '');
-          return created != null && created.isAfter(oldCreated);
-        });
-      }
-
-      return requests
-          .where((r) {
-            // Sekretere yeniden planlama için gönderilmiş aktif kuyruk kaydı,
-            // aynı müşteride başka yeni servis olsa bile sekreter işini tamamlayana
-            // kadar listeden kaybolmamalı.
-            if (r.isSecretaryRework) return true;
-            final failedStatus = r.status == ServiceRequestStatus.couldNotComplete ||
-                r.status == ServiceRequestStatus.cancelled;
-            return !failedStatus || !hasNewer(r);
-          })
-          .toList(growable: false);
-    } catch (_) {
-      return requests;
-    }
   }
 
   Future<List<ServiceRequestModel>> _enrichRequests(
@@ -217,12 +152,11 @@ class ServiceRequestRepositoryImpl implements ServiceRequestRepository {
             customerCity: customer?['city']?.toString() ?? '',
             customerDistrict: customer?['district']?.toString() ?? '',
             customerNeighborhood: customer?['neighborhood']?.toString() ?? '',
-            assignedTechnicianName: request.status == ServiceRequestStatus.pending ||
-                    request.assignedTechnicianId == null ||
-                    request.assignedTechnicianId!.trim().isEmpty
-                ? ''
-                : technicianMap[request.assignedTechnicianId] ??
-                    request.technicianNameSnapshot,
+            assignedTechnicianName: request.assignedTechnicianId != null &&
+                    request.assignedTechnicianId!.trim().isNotEmpty
+                ? technicianMap[request.assignedTechnicianId] ??
+                    request.technicianNameSnapshot
+                : request.technicianNameSnapshot,
             items: itemMap[request.id] ?? const [],
           );
         })
@@ -443,6 +377,22 @@ class ServiceRequestRepositoryImpl implements ServiceRequestRepository {
     await _client.rpc('reopen_cancelled_service_v2', params: {
       'p_service_request_id': serviceRequestId,
     });
+  }
+
+  @override
+  Future<void> addToSecretaryFollowUp({
+    required String serviceRequestId,
+    required DateTime followUpAt,
+    String note = '',
+  }) async {
+    await _client.rpc(
+      'secretary_track_service_v1',
+      params: {
+        'p_service_request_id': serviceRequestId,
+        'p_follow_up_at': followUpAt.toUtc().toIso8601String(),
+        'p_note': note.trim(),
+      },
+    );
   }
 
   @override

@@ -239,7 +239,7 @@ class OperationsRepository {
       dynamic query = client
           .from('service_requests')
           .select(
-            'id, customer_id, assigned_technician_id, service_type, status, '
+            'id, customer_id, assigned_technician_id, assigned_technician_name_snapshot, service_type, status, '
             'price, planned_date, created_at, created_by',
           );
       if (isSecretary) query = query.eq('created_by', viewerId!);
@@ -305,7 +305,10 @@ class OperationsRepository {
         final enriched = <String, dynamic>{
           ...row,
           'customer_name': customerNames[customerId] ?? 'Müşteri',
-          'technician_name': technicianNames[technicianId] ?? 'Atanmadı',
+          'technician_name': technicianNames[technicianId] ??
+              ((row['assigned_technician_name_snapshot']?.toString().trim().isNotEmpty ?? false)
+                  ? row['assigned_technician_name_snapshot'].toString().trim()
+                  : 'Atanmadı'),
         };
         recentServices.add(enriched);
       }
@@ -317,7 +320,7 @@ class OperationsRepository {
       dynamic todayQuery = client
           .from('service_requests')
           .select(
-            'id, customer_id, assigned_technician_id, service_type, status, price, planned_date, created_at, created_by, completion_note',
+            'id, customer_id, assigned_technician_id, assigned_technician_name_snapshot, service_type, status, price, planned_date, created_at, created_by, completion_note',
           )
           .gte('planned_date', todayStart.toUtc().toIso8601String())
           .lt('planned_date', todayEnd.toUtc().toIso8601String())
@@ -366,7 +369,10 @@ class OperationsRepository {
         todayJobs.add({
           ...row,
           'customer_name': customerNames[row['customer_id']?.toString() ?? ''] ?? 'Müşteri',
-          'technician_name': technicianNames[row['assigned_technician_id']?.toString() ?? ''] ?? 'Atanmadı',
+          'technician_name': technicianNames[row['assigned_technician_id']?.toString() ?? ''] ??
+              ((row['assigned_technician_name_snapshot']?.toString().trim().isNotEmpty ?? false)
+                  ? row['assigned_technician_name_snapshot'].toString().trim()
+                  : 'Atanmadı'),
           'created_by_name': viewer['name'] ?? 'Sekreter',
         });
       }

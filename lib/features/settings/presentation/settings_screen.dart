@@ -276,6 +276,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
       }
 
       ref.invalidate(companyAppSettingsProvider);
+      await ref.read(companyAppSettingsProvider.future);
       if (!mounted) return;
       setState(() => _settings = next);
       _message('Yönetim ayarları kaydedildi.');
@@ -747,8 +748,8 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     final accent = _appearance('accent_color', '#0D6578');
     final background = _appearance('content_background', '#F4F7FB');
     return _section(
-      title: 'Panel Görünümü',
-      subtitle: 'Sol menü ve uygulama çalışma alanının kurumsal görünümünü belirleyin.',
+      title: 'Tema / Panel Renkleri',
+      subtitle: 'Sol menü ve uygulama çalışma alanının renklerini belirleyin; seçimleri aşağıdaki önizlemede anında görün.',
       icon: Icons.palette_outlined,
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
         const Text('Sol menü rengi', style: _labelStyle),
@@ -769,9 +770,80 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
           ChoiceChip(label: const Text('Beyaz'), selected: background == '#FFFFFF', onSelected: (_) => _setAppearance('content_background', '#FFFFFF')),
           ChoiceChip(label: const Text('Buz Beyazı'), selected: background == '#F7FAFC', onSelected: (_) => _setAppearance('content_background', '#F7FAFC')),
         ]),
-        const SizedBox(height: 14),
-        _info(Icons.info_outline, 'Renk değişiklikleri kaydedildikten sonra tüm yönetim ekranlarının sol menüsüne uygulanır. Ekranların onaylı yerleşimleri değişmez.'),
+        const SizedBox(height: 16),
+        _appearancePreview(sidebar, accent, background),
+        const SizedBox(height: 12),
+        _info(Icons.info_outline, 'Seçimler yukarıdaki önizlemede anında görünür. Ayarları Kaydet dediğinizde yönetici, sekreter ve tekniker ekranlarına uygulanır; ekran yerleşimleri değişmez.'),
       ]),
+    );
+  }
+
+  Widget _appearancePreview(String sidebarHex, String accentHex, String backgroundHex) {
+    final sidebar = _parseColor(sidebarHex, const Color(0xFF071C2D));
+    final accent = _parseColor(accentHex, _teal);
+    final background = _parseColor(backgroundHex, const Color(0xFFF4F7FB));
+    return Container(
+      height: 150,
+      clipBehavior: Clip.antiAlias,
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: _line),
+      ),
+      child: Row(
+        children: [
+          Container(
+            width: 155,
+            color: sidebar,
+            padding: const EdgeInsets.all(12),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text('ARN ERP', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w900)),
+                const SizedBox(height: 14),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 7),
+                  decoration: BoxDecoration(color: accent, borderRadius: BorderRadius.circular(8)),
+                  child: const Row(
+                    children: [
+                      Icon(Icons.dashboard_outlined, size: 16, color: Colors.white),
+                      SizedBox(width: 7),
+                      Text('Ana Panel', style: TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.w700)),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 8),
+                const Text('Müşteriler', style: TextStyle(color: Colors.white70, fontSize: 11)),
+                const SizedBox(height: 8),
+                const Text('Servis Yönetimi', style: TextStyle(color: Colors.white70, fontSize: 11)),
+              ],
+            ),
+          ),
+          Expanded(
+            child: ColoredBox(
+              color: background,
+              child: Padding(
+                padding: const EdgeInsets.all(14),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text('Canlı panel önizlemesi', style: TextStyle(fontWeight: FontWeight.w900, color: _ink)),
+                    const SizedBox(height: 10),
+                    Expanded(
+                      child: Row(
+                        children: [
+                          Expanded(child: Container(decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(10), border: Border.all(color: _line)))),
+                          const SizedBox(width: 10),
+                          Expanded(child: Container(decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(10), border: Border.all(color: _line)))),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
     );
   }
 

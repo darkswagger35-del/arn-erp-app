@@ -217,8 +217,9 @@ class _AdminDashboardScreenState extends ConsumerState<AdminDashboardScreen> {
         await client
             .from('service_requests')
             .select(
-              'id, assigned_technician_id, created_by, service_type, status, '
-              'price, planned_date, created_at',
+              'id, assigned_technician_id, assigned_technician_name_snapshot, '
+              'created_by, service_type, status, price, planned_date, created_at, '
+              'started_at, completed_at, rework_requested_at, replacement_service_request_id',
             )
             .gte(dateField, start.toUtc().toIso8601String())
             .lt(dateField, end.toUtc().toIso8601String())
@@ -247,14 +248,29 @@ class _AdminDashboardScreenState extends ConsumerState<AdminDashboardScreen> {
         }
       }
 
-      return raw.map((row) {
+      // Operasyon ekranlarinda `deferred`, sekretere aktarimdan kalan
+      // eski kaynak kaydidir. Takvimde de gosterilmedigi icin plan tarihine
+      // gore yapilan dashboard sayimlarina kesinlikle dahil edilmez.
+      final visibleRaw = dateField == 'planned_date'
+          ? raw
+              .where((row) => row['status']?.toString() != 'deferred')
+              .toList(growable: false)
+          : raw;
+
+      return visibleRaw.map((row) {
         final technicianId = row['assigned_technician_id']?.toString() ?? '';
         final creatorId = row['created_by']?.toString() ?? '';
         final technician = profiles[technicianId] ?? const <String, dynamic>{};
         final creator = profiles[creatorId] ?? const <String, dynamic>{};
+        final profileTechnicianName =
+            technician['full_name']?.toString().trim() ?? '';
+        final snapshotTechnicianName =
+            row['assigned_technician_name_snapshot']?.toString().trim() ?? '';
         return <String, dynamic>{
           ...row,
-          'technician_name': technician['full_name']?.toString() ?? '',
+          'technician_name': profileTechnicianName.isNotEmpty
+              ? profileTechnicianName
+              : snapshotTechnicianName,
           'creator_name': creator['full_name']?.toString() ?? '',
           'creator_role': creator['role']?.toString() ?? '',
         };
@@ -398,6 +414,7 @@ class _AdminDashboardScreenState extends ConsumerState<AdminDashboardScreen> {
                             staff: bundle.technicianPerformance,
                             staffLabel: 'Tekniker',
                             countLabel: 'Toplam İş',
+                            showOutcomeColumns: true,
                             onOpenAll: () => context.go('/manager/reports'),
                             onOpenRow: (_) => context.go('/manager/service-planning'),
                           ),
@@ -547,10 +564,9 @@ class _DashboardBundle {
   int get activeServices => _int(workspace['assigned']) + _int(workspace['pending']);
   int get overdueCount => overdueServices.length;
 
-  int get jobCount => plannedServices.where((row) {
-        final status = row['status']?.toString() ?? '';
-        return !_isCancelled(status);
-      }).length;
+  // Günün işi sonuç ne olursa olsun o günün programında kalır.
+  // Tamamlanamadı ve iptal edilen işler performans toplamından silinmez.
+  int get jobCount => plannedServices.length;
 
   double get revenue => details.fold<double>(
         0,
@@ -566,14 +582,19 @@ class _DashboardBundle {
     final grouped = <String, _MutableStaff>{};
     for (final service in plannedServices) {
       final status = service['status']?.toString() ?? '';
-      if (_isCancelled(status)) continue;
       final name = service['technician_name']?.toString().trim() ?? '';
       if (name.isEmpty) continue;
       final item = grouped.putIfAbsent(name, () => _MutableStaff(name));
       item.total += 1;
       if (status == 'completed') {
         item.completed += 1;
+      } else if (status == 'could_not_complete') {
+        item.couldNotComplete += 1;
+      } else if (status == 'cancelled' || status == 'canceled') {
+        item.cancelled += 1;
       } else {
+        // Atandı/devam ediyor/tehir-sekretere aktarım gibi diğer durumlar
+        // günlük toplamdan düşmez; açık/bekleyen tarafta görünür.
         item.pending += 1;
       }
     }
@@ -599,8 +620,13 @@ class _DashboardBundle {
       if (name.isEmpty) continue;
       final item = grouped.putIfAbsent(name, () => _MutableStaff(name));
       item.total += 1;
-      if (service['status']?.toString() == 'completed') {
+      final status = service['status']?.toString() ?? '';
+      if (status == 'completed') {
         item.completed += 1;
+      } else if (status == 'could_not_complete') {
+        item.couldNotComplete += 1;
+      } else if (status == 'cancelled' || status == 'canceled') {
+        item.cancelled += 1;
       } else {
         item.pending += 1;
       }
@@ -618,12 +644,6 @@ class _DashboardBundle {
     });
     return result;
   }
-
-  static bool _isCancelled(String status) =>
-      status == 'cancelled' ||
-      status == 'canceled' ||
-      status == 'could_not_complete' ||
-      status == 'deferred';
 
   static int _int(Object? value) {
     if (value is int) return value;
@@ -644,6 +664,8 @@ class _MutableStaff {
   int total = 0;
   int completed = 0;
   int pending = 0;
+  int couldNotComplete = 0;
+  int cancelled = 0;
   double turnover = 0;
 
   _StaffRow freeze() => _StaffRow(
@@ -651,6 +673,8 @@ class _MutableStaff {
         total: total,
         completed: completed,
         pending: pending,
+        couldNotComplete: couldNotComplete,
+        cancelled: cancelled,
         turnover: turnover,
       );
 }
@@ -661,6 +685,8 @@ class _StaffRow {
     required this.total,
     required this.completed,
     required this.pending,
+    required this.couldNotComplete,
+    required this.cancelled,
     required this.turnover,
   });
 
@@ -668,6 +694,8 @@ class _StaffRow {
   final int total;
   final int completed;
   final int pending;
+  final int couldNotComplete;
+  final int cancelled;
   final double turnover;
 }
 
@@ -885,6 +913,7 @@ class _StaffPerformancePanel extends StatelessWidget {
     required this.staff,
     required this.staffLabel,
     required this.countLabel,
+    this.showOutcomeColumns = false,
     required this.onOpenAll,
     required this.onOpenRow,
   });
@@ -893,6 +922,7 @@ class _StaffPerformancePanel extends StatelessWidget {
   final List<_StaffRow> staff;
   final String staffLabel;
   final String countLabel;
+  final bool showOutcomeColumns;
   final VoidCallback onOpenAll;
   final ValueChanged<_StaffRow> onOpenRow;
 
@@ -907,6 +937,9 @@ class _StaffPerformancePanel extends StatelessWidget {
     final total = visible.fold<int>(0, (sum, row) => sum + row.total);
     final completed = visible.fold<int>(0, (sum, row) => sum + row.completed);
     final pending = visible.fold<int>(0, (sum, row) => sum + row.pending);
+    final couldNotComplete =
+        visible.fold<int>(0, (sum, row) => sum + row.couldNotComplete);
+    final cancelled = visible.fold<int>(0, (sum, row) => sum + row.cancelled);
     final turnover = visible.fold<double>(0, (sum, row) => sum + row.turnover);
 
     return _WhitePanel(
@@ -922,6 +955,7 @@ class _StaffPerformancePanel extends StatelessWidget {
             first: staffLabel,
             second: countLabel,
             showTurnover: true,
+            showOutcomeColumns: showOutcomeColumns,
           ),
           const Divider(height: 1),
           if (visible.isEmpty)
@@ -931,6 +965,7 @@ class _StaffPerformancePanel extends StatelessWidget {
               _PerformanceRow(
                 row: row,
                 money: money,
+                showOutcomeColumns: showOutcomeColumns,
                 onTap: () => onOpenRow(row),
               ),
           const Divider(height: 1),
@@ -944,7 +979,11 @@ class _StaffPerformancePanel extends StatelessWidget {
                 ),
                 Expanded(child: Text('$total', textAlign: TextAlign.center, style: const TextStyle(fontWeight: FontWeight.w900))),
                 Expanded(child: Text('$completed', textAlign: TextAlign.center, style: const TextStyle(color: Color(0xFF12A35A), fontWeight: FontWeight.w900))),
-                Expanded(child: Text('$pending', textAlign: TextAlign.center, style: const TextStyle(color: Color(0xFFF18722), fontWeight: FontWeight.w900))),
+                if (showOutcomeColumns)
+                  Expanded(child: Text('$couldNotComplete', textAlign: TextAlign.center, style: const TextStyle(color: Color(0xFFF18722), fontWeight: FontWeight.w900))),
+                if (showOutcomeColumns)
+                  Expanded(child: Text('$cancelled', textAlign: TextAlign.center, style: const TextStyle(color: Color(0xFFE05252), fontWeight: FontWeight.w900))),
+                Expanded(child: Text('$pending', textAlign: TextAlign.center, style: const TextStyle(color: Color(0xFF7B61FF), fontWeight: FontWeight.w900))),
                 Expanded(
                   flex: 2,
                   child: FittedBox(
@@ -976,11 +1015,13 @@ class _PerformanceHeader extends StatelessWidget {
     required this.first,
     required this.second,
     required this.showTurnover,
+    required this.showOutcomeColumns,
   });
 
   final String first;
   final String second;
   final bool showTurnover;
+  final bool showOutcomeColumns;
 
   @override
   Widget build(BuildContext context) {
@@ -996,6 +1037,10 @@ class _PerformanceHeader extends StatelessWidget {
           Expanded(flex: 4, child: Text(first, style: style)),
           Expanded(child: Text(second, textAlign: TextAlign.center, style: style)),
           const Expanded(child: Text('Tamamlanan', textAlign: TextAlign.center, style: style)),
+          if (showOutcomeColumns)
+            const Expanded(child: Text('Tamamlan.', textAlign: TextAlign.center, style: style)),
+          if (showOutcomeColumns)
+            const Expanded(child: Text('İptal', textAlign: TextAlign.center, style: style)),
           const Expanded(child: Text('Bekleyen', textAlign: TextAlign.center, style: style)),
           if (showTurnover)
             const Expanded(flex: 2, child: Text('Ciro', textAlign: TextAlign.right, style: style)),
@@ -1010,11 +1055,13 @@ class _PerformanceRow extends StatelessWidget {
   const _PerformanceRow({
     required this.row,
     required this.money,
+    required this.showOutcomeColumns,
     required this.onTap,
   });
 
   final _StaffRow row;
   final NumberFormat money;
+  final bool showOutcomeColumns;
   final VoidCallback onTap;
 
   @override
@@ -1055,7 +1102,11 @@ class _PerformanceRow extends StatelessWidget {
             ),
             Expanded(child: Text('${row.total}', textAlign: TextAlign.center, style: const TextStyle(fontWeight: FontWeight.w800))),
             Expanded(child: Text('${row.completed}', textAlign: TextAlign.center, style: const TextStyle(color: Color(0xFF12A35A), fontWeight: FontWeight.w800))),
-            Expanded(child: Text('${row.pending}', textAlign: TextAlign.center, style: const TextStyle(color: Color(0xFFF18722), fontWeight: FontWeight.w800))),
+            if (showOutcomeColumns)
+              Expanded(child: Text('${row.couldNotComplete}', textAlign: TextAlign.center, style: const TextStyle(color: Color(0xFFF18722), fontWeight: FontWeight.w800))),
+            if (showOutcomeColumns)
+              Expanded(child: Text('${row.cancelled}', textAlign: TextAlign.center, style: const TextStyle(color: Color(0xFFE05252), fontWeight: FontWeight.w800))),
+            Expanded(child: Text('${row.pending}', textAlign: TextAlign.center, style: const TextStyle(color: Color(0xFF7B61FF), fontWeight: FontWeight.w800))),
             Expanded(
               flex: 2,
               child: FittedBox(
@@ -1234,6 +1285,9 @@ class _DailyProgramPanel extends StatelessWidget {
     final visible = rows.take(4).toList(growable: false);
     final total = visible.fold<int>(0, (sum, row) => sum + row.total);
     final completed = visible.fold<int>(0, (sum, row) => sum + row.completed);
+    final couldNotComplete =
+        visible.fold<int>(0, (sum, row) => sum + row.couldNotComplete);
+    final cancelled = visible.fold<int>(0, (sum, row) => sum + row.cancelled);
     final pending = visible.fold<int>(0, (sum, row) => sum + row.pending);
 
     return _WhitePanel(
@@ -1252,6 +1306,8 @@ class _DailyProgramPanel extends StatelessWidget {
                 Expanded(flex: 4, child: Text('Tekniker', style: _headerStyle)),
                 Expanded(child: Text('Toplam İş', textAlign: TextAlign.center, style: _headerStyle)),
                 Expanded(child: Text('Tamamlanan', textAlign: TextAlign.center, style: _headerStyle)),
+                Expanded(child: Text('Tamamlan.', textAlign: TextAlign.center, style: _headerStyle)),
+                Expanded(child: Text('İptal', textAlign: TextAlign.center, style: _headerStyle)),
                 Expanded(child: Text('Bekleyen', textAlign: TextAlign.center, style: _headerStyle)),
                 SizedBox(width: 22),
               ],
@@ -1287,7 +1343,9 @@ class _DailyProgramPanel extends StatelessWidget {
                       ),
                       Expanded(child: Text('${row.total}', textAlign: TextAlign.center, style: const TextStyle(fontWeight: FontWeight.w800))),
                       Expanded(child: Text('${row.completed}', textAlign: TextAlign.center, style: const TextStyle(color: Color(0xFF12A35A), fontWeight: FontWeight.w800))),
-                      Expanded(child: Text('${row.pending}', textAlign: TextAlign.center, style: const TextStyle(color: Color(0xFFF18722), fontWeight: FontWeight.w800))),
+                      Expanded(child: Text('${row.couldNotComplete}', textAlign: TextAlign.center, style: const TextStyle(color: Color(0xFFF18722), fontWeight: FontWeight.w800))),
+                      Expanded(child: Text('${row.cancelled}', textAlign: TextAlign.center, style: const TextStyle(color: Color(0xFFE05252), fontWeight: FontWeight.w800))),
+                      Expanded(child: Text('${row.pending}', textAlign: TextAlign.center, style: const TextStyle(color: Color(0xFF7B61FF), fontWeight: FontWeight.w800))),
                       const Icon(Icons.chevron_right_rounded, size: 18, color: Color(0xFF8392A5)),
                     ],
                   ),
@@ -1301,7 +1359,9 @@ class _DailyProgramPanel extends StatelessWidget {
                 const Expanded(flex: 4, child: Text('Toplam', style: TextStyle(fontWeight: FontWeight.w900))),
                 Expanded(child: Text('$total', textAlign: TextAlign.center, style: const TextStyle(fontWeight: FontWeight.w900))),
                 Expanded(child: Text('$completed', textAlign: TextAlign.center, style: const TextStyle(color: Color(0xFF12A35A), fontWeight: FontWeight.w900))),
-                Expanded(child: Text('$pending', textAlign: TextAlign.center, style: const TextStyle(color: Color(0xFFF18722), fontWeight: FontWeight.w900))),
+                Expanded(child: Text('$couldNotComplete', textAlign: TextAlign.center, style: const TextStyle(color: Color(0xFFF18722), fontWeight: FontWeight.w900))),
+                Expanded(child: Text('$cancelled', textAlign: TextAlign.center, style: const TextStyle(color: Color(0xFFE05252), fontWeight: FontWeight.w900))),
+                Expanded(child: Text('$pending', textAlign: TextAlign.center, style: const TextStyle(color: Color(0xFF7B61FF), fontWeight: FontWeight.w900))),
                 const SizedBox(width: 22),
               ],
             ),

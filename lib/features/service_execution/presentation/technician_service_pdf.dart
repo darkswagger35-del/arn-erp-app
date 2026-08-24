@@ -13,6 +13,51 @@ class TechnicianServicePdf {
   static String _money(double value) =>
       NumberFormat.currency(locale: 'tr_TR', symbol: '₺').format(value);
 
+  static String _fieldType(Map<String, dynamic> field) {
+    final raw = field['type']?.toString().trim().toLowerCase() ?? '';
+    if (const {'text', 'multiline', 'number', 'date', 'time', 'select', 'boolean'}.contains(raw)) {
+      return raw;
+    }
+    final label = field['label']?.toString().toLowerCase() ?? '';
+    if (label.contains('tarih')) return 'date';
+    if (label.contains('saat')) return 'time';
+    if (label.contains('tds') || label.contains('basınç') || label.contains('basinc')) return 'number';
+    return 'text';
+  }
+
+  static bool _flag(Map<String, dynamic> config, String key) => config[key] == true;
+
+  static List<Map<String, dynamic>> _pdfFields(Map<String, dynamic> config) {
+    final fields = <Map<String, dynamic>>[];
+    if (_flag(config, 'show_tds_in')) {
+      fields.add({'id': 'tds_in', 'label': 'TDS Giriş', 'type': 'number'});
+    }
+    if (_flag(config, 'show_tds_out')) {
+      fields.add({'id': 'tds_out', 'label': 'TDS Çıkış', 'type': 'number'});
+    }
+    if (_flag(config, 'show_tank_pressure')) {
+      fields.add({'id': 'tank_pressure', 'label': 'Tank Basıncı', 'type': 'number'});
+    }
+    final raw = config['custom_fields'];
+    if (raw is List) {
+      for (final item in raw.whereType<Map>()) {
+        final field = Map<String, dynamic>.from(item);
+        if (field['enabled'] == false || field['show_on_pdf'] == false) continue;
+        if ((field['id']?.toString().trim() ?? '').isEmpty) continue;
+        fields.add(field);
+      }
+    }
+    return fields;
+  }
+
+  static String _fieldValue(Map<String, dynamic> field, Object? raw) {
+    if (_fieldType(field) == 'boolean') {
+      return raw == true || raw?.toString().toLowerCase() == 'true' ? 'Evet' : 'Hayır';
+    }
+    final value = raw?.toString().trim() ?? '';
+    return value.isEmpty ? '-' : value;
+  }
+
   static String fileName(TechnicianJob job) {
     final safe = job.customerName
         .trim()
@@ -31,6 +76,8 @@ class TechnicianServicePdf {
     required double extraAmount,
     required double totalAmount,
     required String paymentMethodLabel,
+    required Map<String, dynamic> serviceFormConfig,
+    required Map<String, dynamic> formValues,
   }) async {
     final regular = await PdfGoogleFonts.notoSansRegular();
     final bold = await PdfGoogleFonts.notoSansBold();
@@ -87,6 +134,18 @@ class TechnicianServicePdf {
           if (job.secretaryName.trim().isNotEmpty) infoRow('Sekreter', job.secretaryName),
           if (description.trim().isNotEmpty) infoRow('Talep / Açıklama', description),
           if (completionNote.trim().isNotEmpty) infoRow('Yapılan İşlem', completionNote),
+          if (_pdfFields(serviceFormConfig).isNotEmpty) ...[
+            pw.SizedBox(height: 10),
+            pw.Text('Servis Formu Ek Bilgileri', style: pw.TextStyle(fontSize: 13, fontWeight: pw.FontWeight.bold)),
+            pw.SizedBox(height: 6),
+            ..._pdfFields(serviceFormConfig).map((field) {
+              final id = field['id']?.toString() ?? '';
+              final label = field['label']?.toString().trim().isNotEmpty == true
+                  ? field['label'].toString().trim()
+                  : 'Alan';
+              return infoRow(label, _fieldValue(field, formValues[id]));
+            }),
+          ],
           pw.SizedBox(height: 12),
           pw.Text('Kullanılan Ürünler', style: pw.TextStyle(fontSize: 14, fontWeight: pw.FontWeight.bold)),
           pw.SizedBox(height: 6),
@@ -145,6 +204,8 @@ class TechnicianServicePdf {
     required double extraAmount,
     required double totalAmount,
     required String paymentMethodLabel,
+    required Map<String, dynamic> serviceFormConfig,
+    required Map<String, dynamic> formValues,
   }) async {
     final bytes = await build(
       job: job,
@@ -157,6 +218,8 @@ class TechnicianServicePdf {
       extraAmount: extraAmount,
       totalAmount: totalAmount,
       paymentMethodLabel: paymentMethodLabel,
+      serviceFormConfig: serviceFormConfig,
+      formValues: formValues,
     );
     await Printing.sharePdf(bytes: bytes, filename: fileName(job));
   }

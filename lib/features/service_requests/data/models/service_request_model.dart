@@ -121,7 +121,7 @@ extension ServiceRequestStatusX on ServiceRequestStatus {
       case ServiceRequestStatus.approved:
         return 'Atama Bekliyor';
       case ServiceRequestStatus.deferred:
-        return 'Tehir Edildi';
+        return 'Sekretere Gönderildi';
       case ServiceRequestStatus.assigned:
         return 'Tekniker Atandı';
       case ServiceRequestStatus.inProgress:
@@ -220,6 +220,7 @@ class ServiceRequestModel {
     this.reworkReason = '',
     this.reworkCompletedAt,
     this.replacementServiceRequestId,
+    this.serviceFormValues = const <String, dynamic>{},
   });
 
   final String? id;
@@ -259,8 +260,18 @@ class ServiceRequestModel {
   final String reworkReason;
   final DateTime? reworkCompletedAt;
   final String? replacementServiceRequestId;
+  final Map<String, dynamic> serviceFormValues;
 
   bool get isSecretaryRework => reworkRequestedAt != null && reworkCompletedAt == null;
+
+  /// Eski servis kaydı sekretere yeniden planlama için aktarılmış ve yerine
+  /// yeni bir servis/taslak oluşturulmuşsa bu kayıt gerçek bir
+  /// "Tamamlanamadı" değildir; geçmişteki sekretere aktarım kaydıdır.
+  bool get wasSentToSecretary =>
+      reworkRequestedAt != null &&
+      replacementServiceRequestId?.trim().isNotEmpty == true;
+
+  bool get isSecretaryFlow => isSecretaryRework || wasSentToSecretary;
 
   ServiceRequestModel copyWith({
     String? id,
@@ -300,6 +311,7 @@ class ServiceRequestModel {
     String? reworkReason,
     DateTime? reworkCompletedAt,
     String? replacementServiceRequestId,
+    Map<String, dynamic>? serviceFormValues,
   }) {
     return ServiceRequestModel(
       id: id ?? this.id,
@@ -343,6 +355,7 @@ class ServiceRequestModel {
       reworkReason: reworkReason ?? this.reworkReason,
       reworkCompletedAt: reworkCompletedAt ?? this.reworkCompletedAt,
       replacementServiceRequestId: replacementServiceRequestId ?? this.replacementServiceRequestId,
+      serviceFormValues: serviceFormValues ?? this.serviceFormValues,
     );
   }
 
@@ -396,6 +409,9 @@ class ServiceRequestModel {
           ? null
           : DateTime.tryParse(map['rework_completed_at'].toString()),
       replacementServiceRequestId: map['replacement_service_request_id']?.toString(),
+      serviceFormValues: map['service_form_values'] is Map
+          ? Map<String, dynamic>.from(map['service_form_values'] as Map)
+          : const <String, dynamic>{},
     );
   }
 

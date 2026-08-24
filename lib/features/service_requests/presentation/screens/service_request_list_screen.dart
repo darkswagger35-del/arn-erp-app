@@ -109,13 +109,6 @@ class _ServiceRequestListScreenState
         request.status != ServiceRequestStatus.deferred;
   }
 
-  bool _isArchivedReworkSource(ServiceRequestModel request) {
-    return request.status == ServiceRequestStatus.couldNotComplete &&
-        request.replacementServiceRequestId != null &&
-        request.reworkCompletedAt != null &&
-        !request.isSecretaryRework;
-  }
-
   String _columnValue(ServiceRequestModel request, String key) {
     switch (key) {
       case 'customer':
@@ -131,7 +124,7 @@ class _ServiceRequestListScreenState
       case 'technician':
         return request.assignedTechnicianName.trim().isEmpty ? 'Atanmadı' : request.assignedTechnicianName.trim();
       case 'status':
-        return request.isSecretaryRework ? 'Sekretere Gönderildi' : request.status.label;
+        return request.isSecretaryFlow ? 'Sekretere Gönderildi' : request.status.label;
       case 'createdDate':
         return request.createdAt == null ? '-' : _formatDate(request.createdAt!.toLocal());
       case 'plannedDate':
@@ -166,8 +159,10 @@ class _ServiceRequestListScreenState
 
       final matchesType =
           _selectedType == null || request.serviceType == _selectedType;
-      final matchesStatus =
-          _selectedStatus == null || request.status == _selectedStatus;
+      final matchesStatus = _selectedStatus == null ||
+          (request.status == _selectedStatus &&
+              !(_selectedStatus == ServiceRequestStatus.couldNotComplete &&
+                  request.isSecretaryFlow));
       final matchesTechnician = _selectedTechnicianId == null ||
           request.assignedTechnicianId == _selectedTechnicianId;
       final matchesCity = _selectedCity == null ||
@@ -223,6 +218,9 @@ class _ServiceRequestListScreenState
           r.status != ServiceRequestStatus.cancelled &&
           r.status != ServiceRequestStatus.inProgress;
     }
+    if (r.isSecretaryFlow || r.status == ServiceRequestStatus.deferred) {
+      return false;
+    }
     return r.status != ServiceRequestStatus.completed &&
         r.status != ServiceRequestStatus.cancelled &&
         r.status != ServiceRequestStatus.couldNotComplete &&
@@ -271,11 +269,10 @@ class _ServiceRequestListScreenState
           .where((r) =>
               r.id != null &&
               _selectedRequestIds.contains(r.id) &&
-              (r.status == ServiceRequestStatus.pending ||
-               r.status == ServiceRequestStatus.deferred))
+              r.status == ServiceRequestStatus.pending)
           .toList(growable: false);
       if (selected.isEmpty) {
-        _showMessage('Kabul edilecek Onay Bekleyen/Tehir kaydı seçilmedi.');
+        _showMessage('Kabul edilecek Onay Bekleyen kayıt seçilmedi.');
         return;
       }
       final missingDate = selected.where((r) => r.plannedDate == null).toList();
@@ -497,36 +494,6 @@ class _ServiceRequestListScreenState
     );
   }
 
-  Future<void> _bulkDefer() async {
-    if (_selectedRequestIds.isEmpty || _bulkBusy) return;
-    final note = TextEditingController();
-    DateTime? newDate;
-    final ok = await showDialog<bool>(context: context, builder: (ctx) => StatefulBuilder(builder: (ctx, setLocal) => AlertDialog(
-      title: const Text('Seçilen İşleri Tehire Al'),
-      content: SizedBox(width: 430, child: Column(mainAxisSize: MainAxisSize.min, children: [
-        TextField(controller: note, maxLines: 3, decoration: const InputDecoration(labelText: 'Yönetici notu', hintText: 'Örn. Bölge rotasına uymuyor')),
-        const SizedBox(height: 12),
-        OutlinedButton.icon(onPressed: () async { final d=await showDatePicker(context: ctx, initialDate: DateTime.now().add(const Duration(days:1)), firstDate: DateTime.now(), lastDate: DateTime(2035)); if(d!=null)setLocal(()=>newDate=d); }, icon: const Icon(Icons.calendar_month), label: Text(newDate==null?'Yeni tarih seç (opsiyonel)':DateFormat('dd.MM.yyyy').format(newDate!)))
-      ])),
-      actions:[TextButton(onPressed:()=>Navigator.pop(ctx,false),child:const Text('Vazgeç')), FilledButton(onPressed:()=>Navigator.pop(ctx,true),child:const Text('Tehire Al'))],
-    )));
-    if (ok != true || !mounted) { note.dispose(); return; }
-    setState(() => _bulkBusy = true);
-    try {
-      final repo = ref.read(serviceRequestRepositoryProvider);
-      final selected = ref.read(serviceRequestControllerProvider).state.serviceRequests.where((r)=>r.id!=null&&_selectedRequestIds.contains(r.id)).toList();
-      for(final r in selected){
-        var base = r;
-        if (r.status == ServiceRequestStatus.assigned && r.id != null) {
-          await repo.unassignTechnician(serviceRequestId: r.id!);
-          base = await repo.getServiceRequestById(r.id!) ?? r;
-        }
-        final desc = '${base.description}${base.description.trim().isEmpty?'':'\n'}[Yönetici Tehir Notu] ${note.text.trim()}';
-        await repo.updateServiceRequest(base.copyWith(status: ServiceRequestStatus.deferred, plannedDate: newDate ?? base.plannedDate, description: desc));
-      }
-      _selectedRequestIds.clear(); await _loadData();
-    } finally { note.dispose(); if(mounted)setState(()=>_bulkBusy=false); }
-  }
 
   Widget _buildBulkBar(List<ServiceRequestModel> filtered) {
     final selectable = filtered.where(_canBulkSelect).toList();
@@ -540,7 +507,6 @@ class _ServiceRequestListScreenState
         FilledButton.icon(onPressed:_bulkBusy||_selectedRequestIds.isEmpty?null:_bulkApprove, icon:const Icon(Icons.check_circle_outline), label:const Text('Kabul Et → Atamaya Gönder')),
         OutlinedButton.icon(onPressed:_bulkBusy||_selectedRequestIds.isEmpty?null:_bulkReturnToApproval, icon:const Icon(Icons.undo_rounded), label:const Text("Onay Bekliyor'a Geri Al")),
         OutlinedButton.icon(onPressed:_bulkBusy||_selectedRequestIds.isEmpty?null:_bulkSetDate, icon:const Icon(Icons.event), label:const Text('Toplu Tarih')),
-        OutlinedButton.icon(onPressed:_bulkBusy||_selectedRequestIds.isEmpty?null:_bulkDefer, icon:const Icon(Icons.pause_circle_outline), label:const Text('Tehire Al')),
         if (filtered.any(_isOverdue))
           FilledButton.icon(
             onPressed: _bulkBusy ? null : () => _sendAllOverdueToSecretary(filtered),
@@ -625,8 +591,12 @@ class _ServiceRequestListScreenState
   Widget build(BuildContext context) {
     final controller = ref.watch(serviceRequestControllerProvider);
     final state = controller.state;
+    // Sekretere aktarımda kaynak servis ve yeni taslak aynı müşteriyi iki kez
+    // gösterebiliyordu. Kaynak aktarım kaydı veritabanında geçmiş olarak kalır,
+    // fakat Servis Talepleri operasyon listesinde ikinci kez gösterilmez.
+    // Aktif sekreter taslağı (isSecretaryRework) görünmeye devam eder.
     final all = state.serviceRequests
-        .where((request) => !_isArchivedReworkSource(request))
+        .where((request) => !request.wasSentToSecretary)
         .toList(growable: false);
     final filtered = _visibleRequests(all);
     final maxPage = filtered.isEmpty ? 0 : (filtered.length - 1) ~/ _pageSize;
@@ -751,6 +721,10 @@ class _ServiceRequestListScreenState
   Widget _buildSummaryCards(List<ServiceRequestModel> requests) {
     final today = DateTime.now();
     final todayCount = requests.where((request) {
+      if (request.isSecretaryFlow ||
+          request.status == ServiceRequestStatus.deferred) {
+        return false;
+      }
       final date = request.plannedDate;
       return date != null && _sameDay(date, today);
     }).length;
@@ -994,7 +968,6 @@ class _ServiceRequestListScreenState
         ('Sekretere Gönderilen', 'rework', null, requests.where((r) => r.isSecretaryRework).length),
       ('Onay Bekliyor', 'status', ServiceRequestStatus.pending, _countStatus(requests, ServiceRequestStatus.pending)),
       ('Atama Bekliyor', 'status', ServiceRequestStatus.approved, _countStatus(requests, ServiceRequestStatus.approved)),
-      ('Tehir', 'status', ServiceRequestStatus.deferred, _countStatus(requests, ServiceRequestStatus.deferred)),
       ('Teknisyende', 'status', ServiceRequestStatus.assigned, _countStatus(requests, ServiceRequestStatus.assigned)),
       ('Devam Ediyor', 'status', ServiceRequestStatus.inProgress, _countStatus(requests, ServiceRequestStatus.inProgress)),
       ('Tamamlandı', 'status', ServiceRequestStatus.completed, _countStatus(requests, ServiceRequestStatus.completed)),
@@ -1625,7 +1598,7 @@ class _ServiceRequestListScreenState
               DataCell(SizedBox(width: 135, child: Text(_creatorName(request), overflow: TextOverflow.ellipsis, style: const TextStyle(fontWeight: FontWeight.w600)))),
               DataCell(SizedBox(width: 165, child: _TechnicianCell(name: request.status == ServiceRequestStatus.pending ? '' : request.assignedTechnicianName))),
               DataCell(
-                request.isSecretaryRework
+                request.isSecretaryFlow
                     ? const _ReworkBadge()
                     : (request.status == ServiceRequestStatus.cancelled ||
                             request.status == ServiceRequestStatus.couldNotComplete)
@@ -1664,7 +1637,7 @@ class _ServiceRequestListScreenState
               children: [
                 _PriorityBadge(request: request),
                 const Spacer(),
-                request.isSecretaryRework
+                request.isSecretaryFlow
                     ? const _ReworkBadge()
                     : (request.status == ServiceRequestStatus.cancelled ||
                             request.status == ServiceRequestStatus.couldNotComplete)
@@ -1745,6 +1718,30 @@ class _ServiceRequestListScreenState
             onPressed: isSaving ? null : () => _editRequest(request),
             icon: const Icon(Icons.edit_outlined),
           ),
+        if (widget.role == AppRole.secretary &&
+            (request.status == ServiceRequestStatus.couldNotComplete ||
+                request.status == ServiceRequestStatus.cancelled)) ...[
+          IconButton(
+            tooltip: 'Takibe Al',
+            onPressed: isSaving ? null : () => _addToFollowUp(request),
+            color: const Color(0xFF7C5CE5),
+            icon: const Icon(Icons.schedule_rounded),
+          ),
+          IconButton(
+            tooltip: 'Müşteriyi Pasife Al',
+            onPressed: isSaving ? null : () => _markCustomerInactive(request),
+            color: const Color(0xFFC93636),
+            icon: const Icon(Icons.person_off_outlined),
+          ),
+        ],
+        if (widget.role == AppRole.secretary &&
+            request.status == ServiceRequestStatus.couldNotComplete)
+          IconButton(
+            tooltip: 'Servisi İptal Et',
+            onPressed: isSaving ? null : () => _cancelRequest(request),
+            color: const Color(0xFFE67E22),
+            icon: const Icon(Icons.cancel_outlined),
+          ),
         if (_canManageApproval && request.status == ServiceRequestStatus.pending)
           IconButton(
             tooltip: 'Onayla → Atamaya Gönder',
@@ -1808,15 +1805,11 @@ class _ServiceRequestListScreenState
               case 'submit_rework':
                 _submitReworkToManager(request);
                 break;
-              case 'defer':
-                if (request.id != null) {
-                  setState(() {
-                    _selectedRequestIds
-                      ..clear()
-                      ..add(request.id!);
-                  });
-                  _bulkDefer();
-                }
+              case 'track':
+                _addToFollowUp(request);
+                break;
+              case 'inactive_customer':
+                _markCustomerInactive(request);
                 break;
               case 'cancel':
                 _cancelRequest(request);
@@ -1837,11 +1830,6 @@ class _ServiceRequestListScreenState
                 value: 'approve',
                 child: ListTile(dense: true, leading: Icon(Icons.check_circle_outline), title: Text('Onayla → Atamaya Gönder')),
               ),
-            if (_canManageApproval && (request.status == ServiceRequestStatus.pending || request.status == ServiceRequestStatus.approved))
-              const PopupMenuItem(
-                value: 'defer',
-                child: ListTile(dense: true, leading: Icon(Icons.pause_circle_outline), title: Text('Tehire Al')),
-              ),
             if (_canManageApproval && request.status != ServiceRequestStatus.completed && request.status != ServiceRequestStatus.cancelled)
               const PopupMenuItem(
                 value: 'cancel',
@@ -1856,6 +1844,38 @@ class _ServiceRequestListScreenState
               const PopupMenuItem(
                 value: 'submit_rework',
                 child: ListTile(dense: true, leading: Icon(Icons.send_rounded), title: Text('Yöneticiye Gönder')),
+              ),
+            if (widget.role == AppRole.secretary &&
+                (request.status == ServiceRequestStatus.couldNotComplete ||
+                    request.status == ServiceRequestStatus.cancelled))
+              const PopupMenuItem(
+                value: 'track',
+                child: ListTile(
+                  dense: true,
+                  leading: Icon(Icons.schedule_rounded),
+                  title: Text('Takibe Al'),
+                ),
+              ),
+            if (widget.role == AppRole.secretary &&
+                (request.status == ServiceRequestStatus.couldNotComplete ||
+                    request.status == ServiceRequestStatus.cancelled))
+              const PopupMenuItem(
+                value: 'inactive_customer',
+                child: ListTile(
+                  dense: true,
+                  leading: Icon(Icons.person_off_outlined),
+                  title: Text('Müşteriyi Pasife Al'),
+                ),
+              ),
+            if (widget.role == AppRole.secretary &&
+                request.status == ServiceRequestStatus.couldNotComplete)
+              const PopupMenuItem(
+                value: 'cancel',
+                child: ListTile(
+                  dense: true,
+                  leading: Icon(Icons.cancel_outlined),
+                  title: Text('Servisi İptal Et'),
+                ),
               ),
             const PopupMenuItem(
               value: 'customer',
@@ -2100,7 +2120,7 @@ class _ServiceRequestListScreenState
                         ],
                       ),
                     ),
-                    request.isSecretaryRework ? const _ReworkBadge() : _StatusBadge(status: request.status),
+                    request.isSecretaryFlow ? const _ReworkBadge() : _StatusBadge(status: request.status),
                     IconButton(
                       onPressed: () => Navigator.pop(dialogContext),
                       icon: const Icon(Icons.close),
@@ -2212,8 +2232,10 @@ class _ServiceRequestListScreenState
                   ),
                 ],
                 const SizedBox(height: 22),
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.end,
+                Wrap(
+                  alignment: WrapAlignment.end,
+                  spacing: 10,
+                  runSpacing: 10,
                   children: [
                     OutlinedButton.icon(
                       onPressed: () {
@@ -2224,8 +2246,8 @@ class _ServiceRequestListScreenState
                       label: const Text('Müşteri Kartı'),
                     ),
                     if (widget.role != AppRole.technician &&
-                        request.status == ServiceRequestStatus.cancelled) ...[
-                      const SizedBox(width: 10),
+                        (request.status == ServiceRequestStatus.cancelled ||
+                            request.status == ServiceRequestStatus.couldNotComplete)) ...[
                       OutlinedButton.icon(
                         onPressed: () async {
                           Navigator.pop(dialogContext);
@@ -2237,7 +2259,31 @@ class _ServiceRequestListScreenState
                           foregroundColor: const Color(0xFFC93636),
                         ),
                       ),
-                      const SizedBox(width: 10),
+                      if (widget.role == AppRole.secretary)
+                        OutlinedButton.icon(
+                          onPressed: () {
+                            Navigator.pop(dialogContext);
+                            _addToFollowUp(request);
+                          },
+                          icon: const Icon(Icons.schedule_rounded),
+                          label: const Text('Takibe Al'),
+                          style: OutlinedButton.styleFrom(
+                            foregroundColor: const Color(0xFF7C5CE5),
+                          ),
+                        ),
+                      if (widget.role == AppRole.secretary &&
+                          request.status == ServiceRequestStatus.couldNotComplete)
+                        OutlinedButton.icon(
+                          onPressed: () {
+                            Navigator.pop(dialogContext);
+                            _cancelRequest(request);
+                          },
+                          icon: const Icon(Icons.cancel_outlined),
+                          label: const Text('İptal Et'),
+                          style: OutlinedButton.styleFrom(
+                            foregroundColor: const Color(0xFFE67E22),
+                          ),
+                        ),
                       FilledButton.icon(
                         onPressed: () {
                           Navigator.pop(dialogContext);
@@ -2588,6 +2634,121 @@ class _ServiceRequestListScreenState
     await _loadData();
   }
 
+  Future<void> _addToFollowUp(ServiceRequestModel request) async {
+    if (request.id == null || widget.role != AppRole.secretary) return;
+    final now = DateTime.now();
+    DateTime followUpAt = DateTime(
+      now.year,
+      now.month,
+      now.day + 1,
+      10,
+    );
+    final noteController = TextEditingController(
+      text: request.status == ServiceRequestStatus.couldNotComplete
+          ? request.completionNote.trim()
+          : request.cancellationReason.trim(),
+    );
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: const Text('Servisi Takibe Al'),
+          content: SizedBox(
+            width: 480,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  '${request.customerName} • ${request.customerPhone}',
+                  style: const TextStyle(fontWeight: FontWeight.w900),
+                ),
+                const SizedBox(height: 12),
+                OutlinedButton.icon(
+                  onPressed: () async {
+                    final date = await showDatePicker(
+                      context: context,
+                      initialDate: followUpAt,
+                      firstDate: DateTime(now.year, now.month, now.day),
+                      lastDate: DateTime(2035),
+                      locale: const Locale('tr', 'TR'),
+                    );
+                    if (date == null || !context.mounted) return;
+                    final time = await showTimePicker(
+                      context: context,
+                      initialTime: TimeOfDay.fromDateTime(followUpAt),
+                    );
+                    if (time == null) return;
+                    setDialogState(() {
+                      followUpAt = DateTime(
+                        date.year,
+                        date.month,
+                        date.day,
+                        time.hour,
+                        time.minute,
+                      );
+                    });
+                  },
+                  icon: const Icon(Icons.schedule_rounded),
+                  label: Text(
+                    DateFormat('dd.MM.yyyy HH:mm').format(followUpAt),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: noteController,
+                  maxLines: 4,
+                  decoration: const InputDecoration(
+                    labelText: 'Takip notu',
+                    hintText: 'Örn. müşteriyle yarın tekrar görüşülecek',
+                  ),
+                ),
+                const SizedBox(height: 10),
+                const Text(
+                  'Kayıt Sekreter > Takip Listesi bölümüne gider. Servis geçmişi silinmez.',
+                  style: TextStyle(fontSize: 12, color: Color(0xFF65778A)),
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext, false),
+              child: const Text('Vazgeç'),
+            ),
+            FilledButton.icon(
+              onPressed: () => Navigator.pop(dialogContext, true),
+              icon: const Icon(Icons.schedule_send_rounded),
+              label: const Text('Takibe Al'),
+            ),
+          ],
+        ),
+      ),
+    );
+
+    if (confirmed != true) {
+      noteController.dispose();
+      return;
+    }
+
+    try {
+      await ref.read(serviceRequestRepositoryProvider).addToSecretaryFollowUp(
+            serviceRequestId: request.id!,
+            followUpAt: followUpAt,
+            note: noteController.text,
+          );
+      if (!mounted) return;
+      _showMessage('${request.customerName} takip listesine eklendi.');
+      await _loadData();
+      if (mounted) context.push('/secretary/follow-ups/tracking');
+    } catch (error) {
+      if (mounted) _showMessage('Takibe alınamadı: $error');
+    } finally {
+      noteController.dispose();
+    }
+  }
+
   void _openNewServiceForCancelled(ServiceRequestModel request) {
     final base = widget.role == AppRole.secretary ? '/secretary' : '/manager';
     context.push('$base/service-requests/new/${request.customerId}');
@@ -2636,6 +2797,8 @@ class _ServiceRequestListScreenState
 
       final openStatuses = [
         ServiceRequestStatus.pending.value,
+        ServiceRequestStatus.approved.value,
+        ServiceRequestStatus.deferred.value,
         ServiceRequestStatus.assigned.value,
         ServiceRequestStatus.inProgress.value,
       ];
@@ -2645,7 +2808,6 @@ class _ServiceRequestListScreenState
             .from('service_requests')
             .update({
               'status': ServiceRequestStatus.cancelled.value,
-              'assigned_technician_id': null,
               'route_order': null,
               'route_plan_date': null,
               'cancellation_reason': 'Müşteri pasife alındı - bir daha servis istemiyor',
@@ -2661,7 +2823,6 @@ class _ServiceRequestListScreenState
             .from('service_requests')
             .update({
               'status': ServiceRequestStatus.cancelled.value,
-              'assigned_technician_id': null,
               'route_order': null,
               'route_plan_date': null,
               'updated_at': now,
@@ -3026,7 +3187,7 @@ class _StatusBadge extends StatelessWidget {
     final label = switch (status) {
       ServiceRequestStatus.pending => 'Onay Bekliyor',
       ServiceRequestStatus.approved => 'Atama Bekliyor',
-      ServiceRequestStatus.deferred => 'Tehir Edildi',
+      ServiceRequestStatus.deferred => 'Sekretere Gönderildi',
       ServiceRequestStatus.assigned => 'Teknisyende',
       ServiceRequestStatus.inProgress => 'Devam Ediyor',
       ServiceRequestStatus.completed => 'Tamamlandı',
@@ -3271,7 +3432,16 @@ int _countStatus(
   List<ServiceRequestModel> requests,
   ServiceRequestStatus status,
 ) {
-  return requests.where((request) => request.status == status).length;
+  return requests.where((request) {
+    if (request.status != status) return false;
+    // Sekretere aktarım kayıtları kendi kuyruğunda tek kez sayılır;
+    // Onay/Tamamlanamadı vb. normal durum sayaçlarına ikinci kez girmez.
+    if (request.isSecretaryFlow ||
+        request.status == ServiceRequestStatus.deferred) {
+      return false;
+    }
+    return true;
+  }).length;
 }
 
 DateTime _startOfDay(DateTime date) => DateTime(date.year, date.month, date.day);

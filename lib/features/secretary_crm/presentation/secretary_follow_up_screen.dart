@@ -267,8 +267,14 @@ class _SecretaryFollowUpScreenState extends ConsumerState<SecretaryFollowUpScree
               if (lead.status != 'won')
                 FilledButton.icon(
                   onPressed: () => _convertToJob(lead),
-                  icon: const Icon(Icons.handshake_outlined),
-                  label: const Text('İş Aldım'),
+                  icon: Icon(
+                    lead.customerId?.isNotEmpty == true
+                        ? Icons.restart_alt_rounded
+                        : Icons.handshake_outlined,
+                  ),
+                  label: Text(
+                    lead.customerId?.isNotEmpty == true ? 'Servis Aç' : 'İş Aldım',
+                  ),
                 ),
               if (lead.customerId?.isNotEmpty == true)
                 IconButton(
@@ -432,6 +438,36 @@ class _SecretaryFollowUpScreenState extends ConsumerState<SecretaryFollowUpScree
   }
 
   Future<void> _convertToJob(SecretaryLead lead) async {
+    final existingCustomerId = lead.customerId?.trim() ?? '';
+    if (existingCustomerId.isNotEmpty) {
+      try {
+        final crm = ref.read(secretaryCrmRepositoryProvider);
+        try {
+          final existing = await crm.client
+              .from('customers')
+              .select('id,is_active')
+              .eq('id', existingCustomerId)
+              .maybeSingle();
+          if (existing != null && existing['is_active'] != true) {
+            await ref
+                .read(customerRepositoryProvider)
+                .toggleActive(existingCustomerId, true);
+          }
+        } catch (_) {}
+        await crm.markWon(leadId: lead.id, customerId: existingCustomerId);
+        if (mounted) {
+          context.go('/secretary/service-requests/new/$existingCustomerId');
+        }
+      } catch (e) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Yeni servis açılamadı: $e')),
+          );
+        }
+      }
+      return;
+    }
+
     final city = TextEditingController();
     final district = TextEditingController();
     final address = TextEditingController();

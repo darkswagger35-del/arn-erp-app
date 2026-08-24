@@ -25,8 +25,13 @@ class TechnicianJob {
     this.district = '',
     this.neighborhood = '',
     this.completedAt,
+    this.cancelledAt,
+    this.cancellationReason = '',
+    this.technicianUnavailableReason = '',
+    this.technicianUnavailableNote = '',
     this.routeOrder,
     this.routePlanDate,
+    this.formValues = const <String, dynamic>{},
   });
 
   final String id;
@@ -52,8 +57,13 @@ class TechnicianJob {
   final String district;
   final String neighborhood;
   final DateTime? completedAt;
+  final DateTime? cancelledAt;
+  final String cancellationReason;
+  final String technicianUnavailableReason;
+  final String technicianUnavailableNote;
   final int? routeOrder;
   final DateTime? routePlanDate;
+  final Map<String, dynamic> formValues;
 
   bool get hasCoordinates => latitude != null && longitude != null;
 
@@ -137,10 +147,21 @@ class TechnicianJob {
       completedAt: map['completed_at'] == null
           ? null
           : DateTime.tryParse(map['completed_at'].toString()),
+      cancelledAt: map['cancelled_at'] == null
+          ? null
+          : DateTime.tryParse(map['cancelled_at'].toString()),
+      cancellationReason: map['cancellation_reason']?.toString() ?? '',
+      technicianUnavailableReason:
+          map['technician_unavailable_reason']?.toString() ?? '',
+      technicianUnavailableNote:
+          map['technician_unavailable_note']?.toString() ?? '',
       routeOrder: (map['route_order'] as num?)?.toInt(),
       routePlanDate: map['route_plan_date'] == null
           ? null
           : DateTime.tryParse(map['route_plan_date'].toString()),
+      formValues: map['service_form_values'] is Map
+          ? Map<String, dynamic>.from(map['service_form_values'] as Map)
+          : const <String, dynamic>{},
     );
   }
 }
@@ -237,10 +258,7 @@ class ServiceExecutionRepository {
     final response = await _client
         .from('service_requests')
         .select(
-          'id, customer_id, created_by, service_type, description, completion_note, status, '
-          'price, planned_date, route_order, route_plan_date, planned_product_id, planned_product_name, '
-          'planned_quantity, planned_unit_price, completed_at, '
-          'customers(full_name, company_name, phone, city, district, neighborhood, address, latitude, longitude, maps_url)',
+          '*, customers(full_name, company_name, phone, city, district, neighborhood, address, latitude, longitude, maps_url)',
         )
         .eq('assigned_technician_id', technicianId)
         .inFilter('status', const ['assigned', 'in_progress'])
@@ -279,10 +297,7 @@ class ServiceExecutionRepository {
     final rows = await _client
         .from('service_requests')
         .select(
-          'id, customer_id, created_by, service_type, description, completion_note, status, '
-          'price, planned_date, route_order, route_plan_date, planned_product_id, planned_product_name, planned_quantity, '
-          'planned_unit_price, completed_at, '
-          'customers(full_name, company_name, phone, city, district, neighborhood, address, latitude, longitude, maps_url)',
+          '*, customers(full_name, company_name, phone, city, district, neighborhood, address, latitude, longitude, maps_url)',
         )
         .eq('assigned_technician_id', currentUserId)
         .eq('status', 'completed')
@@ -294,6 +309,85 @@ class ServiceExecutionRepository {
         .whereType<Map>()
         .map((row) => TechnicianJob.fromMap(Map<String, dynamic>.from(row)))
         .toList(growable: false);
+  }
+
+  Future<List<TechnicianJob>> getFailedJobsForDay(DateTime day) async {
+    final currentUserId = _client.auth.currentUser?.id;
+    if (currentUserId == null || currentUserId.isEmpty) return const [];
+
+    final dayKey =
+        '${day.year.toString().padLeft(4, '0')}-${day.month.toString().padLeft(2, '0')}-${day.day.toString().padLeft(2, '0')}';
+    try {
+      final response = await _client.rpc(
+        'technician_job_history_v1',
+        params: {'p_day': dayKey},
+      );
+      final rawRows = response is List
+          ? response
+          : response is Map && response['jobs'] is List
+              ? response['jobs'] as List
+              : const <dynamic>[];
+      final rows = rawRows
+          .whereType<Map>()
+          .map((row) => Map<String, dynamic>.from(row))
+          .toList(growable: true);
+      await _enrichCustomerLocations(rows);
+      return rows
+          .map(TechnicianJob.fromMap)
+          .where((job) =>
+              job.status == 'could_not_complete' ||
+              job.status == 'cancelled')
+          .toList(growable: false);
+    } on PostgrestException {
+      final start = DateTime(day.year, day.month, day.day).toUtc();
+      final end = DateTime(day.year, day.month, day.day + 1).toUtc();
+      final rows = await _client
+          .from('service_requests')
+          .select(
+            '*, customers(full_name, company_name, phone, city, district, neighborhood, address, latitude, longitude, maps_url)',
+          )
+          .eq('assigned_technician_id', currentUserId)
+          .inFilter('status', const ['could_not_complete', 'cancelled'])
+          .gte('planned_date', start.toIso8601String())
+          .lt('planned_date', end.toIso8601String())
+          .order('planned_date', ascending: true);
+      return (rows as List)
+          .whereType<Map>()
+          .map((row) => TechnicianJob.fromMap(Map<String, dynamic>.from(row)))
+          .toList(growable: false);
+    }
+  }
+
+  Future<void> rescheduleOwnJob({
+    required String serviceRequestId,
+    required DateTime plannedAt,
+    String note = '',
+  }) async {
+    await _client.rpc(
+      'technician_reschedule_own_job_v1',
+      params: {
+        'p_service_request_id': serviceRequestId,
+        'p_planned_at': plannedAt.toUtc().toIso8601String(),
+        'p_note': note.trim(),
+      },
+    );
+  }
+
+  Future<String> sendOwnJobToSecretary({
+    required String serviceRequestId,
+    String note = '',
+  }) async {
+    final result = await _client.rpc(
+      'technician_send_job_to_secretary_v1',
+      params: {
+        'p_service_request_id': serviceRequestId,
+        'p_note': note.trim(),
+      },
+    );
+    if (result is Map) {
+      return result['secretary_name']?.toString() ?? 'Sekreter';
+    }
+    return 'Sekreter';
   }
 
   Future<void> _enrichCustomerLocations(List<Map<String, dynamic>> rows) async {
@@ -330,9 +424,7 @@ class ServiceExecutionRepository {
     final row = await _client
         .from('service_requests')
         .select(
-          'id, customer_id, created_by, service_type, description, completion_note, status, price, '
-          'planned_date, route_order, route_plan_date, planned_product_id, planned_product_name, planned_quantity, planned_unit_price, completed_at, '
-          'customers(full_name, company_name, phone, city, district, neighborhood, address, latitude, longitude, maps_url)',
+          '*, customers(full_name, company_name, phone, city, district, neighborhood, address, latitude, longitude, maps_url)',
         )
         .eq('id', serviceRequestId)
         .maybeSingle();
@@ -364,6 +456,27 @@ class ServiceExecutionRepository {
       'completion_note': completionNote.trim(),
       'updated_at': DateTime.now().toUtc().toIso8601String(),
     }).eq('id', serviceRequestId);
+  }
+
+  Future<void> updateServiceFormValues({
+    required String serviceRequestId,
+    required Map<String, dynamic> values,
+  }) async {
+    try {
+      await _client.from('service_requests').update({
+        'service_form_values': values,
+        'updated_at': DateTime.now().toUtc().toIso8601String(),
+      }).eq('id', serviceRequestId);
+    } on PostgrestException catch (error) {
+      final text = '${error.code} ${error.message}'.toLowerCase();
+      if (text.contains('service_form_values') || text.contains('pgrst204')) {
+        // Yeni migration henüz kurulmamışsa servis kapatma akışını bozmayız.
+        // Değerlerin kalıcı saklanması için SUPABASE_V7_DINAMIK_SERVIS_FORMU.sql
+        // dosyası bir kez uygulanmalıdır.
+        return;
+      }
+      rethrow;
+    }
   }
 
   Future<void> startService(String serviceRequestId) async {
@@ -563,13 +676,38 @@ class ServiceExecutionRepository {
     required String serviceRequestId,
     required String reason,
   }) async {
+    final cleanReason = reason.trim();
+    if (cleanReason.isEmpty) {
+      throw const FormatException('Tamamlanamama sebebi boş olamaz.');
+    }
+
+    try {
+      // RLS nedeniyle teknikerin doğrudan UPDATE'i bazı kurulumlarda sessizce
+      // 0 satır etkileyebiliyor. V9 security-definer RPC kaydı gerçekten kapatır,
+      // aktif rota listesinden çıkarır; tekniker atamasını geçmiş için korur.
+      await _client.rpc(
+        'technician_mark_could_not_complete_v1',
+        params: {
+          'p_service_request_id': serviceRequestId,
+          'p_reason': cleanReason,
+        },
+      );
+      return;
+    } on PostgrestException catch (error) {
+      final text = '${error.code} ${error.message}'.toLowerCase();
+      final missingFunction = text.contains('technician_mark_could_not_complete_v1') ||
+          text.contains('pgrst202') ||
+          text.contains('42883');
+      if (!missingFunction) rethrow;
+    }
+
+    // Geriye uyumluluk: V9 SQL henüz uygulanmadıysa eski doğrudan güncellemeyi dene.
+    // Kalıcı çözüm için SUPABASE_V9_SERVIS_TAKIP_VE_TEKNIKER_GECMIS.sql çalıştırılmalıdır.
     await _client
         .from('service_requests')
         .update({
           'status': 'could_not_complete',
-          'completion_note': reason.trim(),
-          // Tamamlanamayan iş tekniker ekranından çıkar ve yeniden yönetim havuzuna düşer.
-          'assigned_technician_id': null,
+          'completion_note': cleanReason,
           'route_order': null,
           'route_plan_date': null,
           'updated_at': DateTime.now().toUtc().toIso8601String(),

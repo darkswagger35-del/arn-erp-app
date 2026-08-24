@@ -1,0 +1,19 @@
+MOTUS / ARN ERP V19 - TEKNIKER ROTA SADELESTIRME
+
+1) Tekniker ekraninda rota icin tek bir Baslangic Noktasi akisi eklendi.
+   - Adres elle yazilabilir.
+   - Istenirse mevcut konum kullanilabilir.
+
+2) Rotayi Olustur butonu secilen baslangic noktasindan aktif isleri siralar.
+   - Siralama route_order olarak kaydedilir.
+   - Sol taraftaki is listesi ayni rota sirasina gore yeniden yuklenir.
+   - Yandex rota URL'si de ayni sirali is listesini kullanir.
+
+3) Koordinati olmayan eski musteriler icin rota olusturma sirasinda adres geocoding fallback'i eklendi.
+
+4) Tekniker ekranindaki 'Sekretere Aktar' butonu kaldirildi.
+   - Erteleme tek akis olarak birakildi.
+   - Eski sekretere aktarilan/deferred kayitlar teknikerde 'Yapilamayan / Iptal' listesine artik dahil edilmez.
+   - Veritabanindaki gecmis kayitlar silinmez.
+
+5) Supabase SQL degisikligi yoktur.

@@ -533,20 +533,60 @@ class _ServiceDocumentsScreenState
       return const <pw.Widget>[];
     }
 
-    final customFields = form['custom_fields'] is List
-        ? (form['custom_fields'] as List).whereType<Map>().toList()
-        : const <Map>[];
+    String fieldType(Map<String, dynamic> field) {
+      final raw = field['type']?.toString().trim().toLowerCase() ?? '';
+      if (const {'text', 'multiline', 'number', 'date', 'time', 'select', 'boolean'}.contains(raw)) {
+        return raw;
+      }
+      final label = field['label']?.toString().toLowerCase() ?? '';
+      if (label.contains('tarih')) return 'date';
+      if (label.contains('saat')) return 'time';
+      if (label.contains('tds') || label.contains('basınç') || label.contains('basinc')) return 'number';
+      return 'text';
+    }
+
+    String fieldValue(Map<String, dynamic> field, Object? raw) {
+      if (fieldType(field) == 'boolean') {
+        return raw == true || raw?.toString().toLowerCase() == 'true' ? 'Evet' : 'Hayır';
+      }
+      final text = raw?.toString().trim() ?? '';
+      return text.isEmpty ? '-' : text;
+    }
+
+    final extraFields = <Map<String, dynamic>>[];
+    if (show('show_tds_in', fallback: false)) {
+      extraFields.add({'id': 'tds_in', 'label': 'TDS Giriş', 'type': 'number'});
+    }
+    if (show('show_tds_out', fallback: false)) {
+      extraFields.add({'id': 'tds_out', 'label': 'TDS Çıkış', 'type': 'number'});
+    }
+    if (show('show_tank_pressure', fallback: false)) {
+      extraFields.add({'id': 'tank_pressure', 'label': 'Tank Basıncı', 'type': 'number'});
+    }
+    final customFields = form['custom_fields'];
+    if (customFields is List) {
+      for (final raw in customFields.whereType<Map>()) {
+        final field = Map<String, dynamic>.from(raw);
+        if (field['enabled'] == false || field['show_on_pdf'] == false) continue;
+        if ((field['id']?.toString().trim() ?? '').isEmpty) continue;
+        extraFields.add(field);
+      }
+    }
 
     final body = <pw.Widget>[];
     for (final key in sectionOrder()) {
       body.addAll(section(key));
     }
-    if (customFields.isNotEmpty) {
+    if (extraFields.isNotEmpty) {
       body.add(_pdfSectionTitle('Ek Bilgiler'));
-      for (final field in customFields) {
-        if (field['enabled'] == false) continue;
-        body.add(_pdfInfoRow(field['label']?.toString() ?? 'Alan', ''));
+      for (final field in extraFields) {
+        final id = field['id']?.toString() ?? '';
+        final label = field['label']?.toString().trim().isNotEmpty == true
+            ? field['label'].toString().trim()
+            : 'Alan';
+        body.add(_pdfInfoRow(label, fieldValue(field, request.serviceFormValues[id])));
       }
+      body.add(pw.SizedBox(height: 10));
     }
 
     document.addPage(

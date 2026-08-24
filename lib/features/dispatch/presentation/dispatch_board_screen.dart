@@ -183,9 +183,7 @@ class _DispatchBoardScreenState extends ConsumerState<DispatchBoardScreen> {
           ..clear()
           ..addAll(validSmartIds);
         if (_smartTechnicianIds.isEmpty) {
-          _smartTechnicianIds.addAll(
-            technicians.take(math.min(3, technicians.length)).map((e) => e.id),
-          );
+          _smartTechnicianIds.addAll(technicians.map((e) => e.id));
         }
         if (_selectedCity == null || !cities.contains(_selectedCity)) {
           _selectedCity = cities.contains('İzmir')
@@ -346,9 +344,7 @@ class _DispatchBoardScreenState extends ConsumerState<DispatchBoardScreen> {
         .where((tech) => _smartTechnicianIds.contains(tech.id))
         .toList(growable: false);
     if (selected.isNotEmpty) return selected;
-    return _technicians
-        .take(math.min(3, _technicians.length))
-        .toList(growable: false);
+    return _technicians.toList(growable: false);
   }
 
   String get _selectedAreaLabel {
@@ -1659,33 +1655,39 @@ class _DispatchBoardScreenState extends ConsumerState<DispatchBoardScreen> {
           title: const Text('Otomatik Dağıtım Teknikerleri'),
           content: SizedBox(
             width: 460,
+            height: math.min(560.0, 92.0 + (_technicians.length * 64.0)),
             child: Column(
-              mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 const Text(
-                  'En fazla 3 tekniker seçin. MOTUS işleri sayıya göre değil, gerçek mesafe ve rota yakınlığına göre kümeler.',
+                  'Aktif teknikerlerden istediğiniz kadar seçebilirsiniz. MOTUS işleri sayıya göre değil, gerçek mesafe ve rota yakınlığına göre kümeler.',
                   style: TextStyle(color: _muted),
                 ),
                 const SizedBox(height: 12),
-                ..._technicians.map((tech) {
-                  final checked = draft.contains(tech.id);
-                  return CheckboxListTile(
-                    dense: true,
-                    value: checked,
-                    title: Text(tech.fullName),
-                    subtitle: Text('Bugünkü iş: ${_todayCountForTechnician(tech.id)}'),
-                    onChanged: (value) {
-                      setDialogState(() {
-                        if (value == true) {
-                          if (draft.length < 3) draft.add(tech.id);
-                        } else {
-                          draft.remove(tech.id);
-                        }
-                      });
+                Expanded(
+                  child: ListView.builder(
+                    itemCount: _technicians.length,
+                    itemBuilder: (context, index) {
+                      final tech = _technicians[index];
+                      final checked = draft.contains(tech.id);
+                      return CheckboxListTile(
+                        dense: true,
+                        value: checked,
+                        title: Text(tech.fullName),
+                        subtitle: Text('Bugünkü iş: ${_todayCountForTechnician(tech.id)}'),
+                        onChanged: (value) {
+                          setDialogState(() {
+                            if (value == true) {
+                              draft.add(tech.id);
+                            } else {
+                              draft.remove(tech.id);
+                            }
+                          });
+                        },
+                      );
                     },
-                  );
-                }),
+                  ),
+                ),
               ],
             ),
           ),

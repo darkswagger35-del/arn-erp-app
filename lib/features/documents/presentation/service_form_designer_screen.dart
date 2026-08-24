@@ -101,36 +101,138 @@ class _ServiceFormDesignerScreenState
     setState(() => _config['section_order'] = order);
   }
 
-  Future<void> _addCustomField() async {
-    final label = TextEditingController();
-    var required = false;
+  String _normalizedFieldType(Map<String, dynamic> field) {
+    final raw = field['type']?.toString().trim().toLowerCase() ?? '';
+    if (const {'text', 'multiline', 'number', 'date', 'time', 'select', 'boolean'}.contains(raw)) {
+      return raw;
+    }
+    final label = field['label']?.toString().toLowerCase() ?? '';
+    if (label.contains('tarih')) return 'date';
+    if (label.contains('saat')) return 'time';
+    if (label.contains('tds') || label.contains('basınç') || label.contains('basinc')) return 'number';
+    return 'text';
+  }
+
+  String _fieldTypeLabel(String type) => switch (type) {
+        'multiline' => 'Uzun metin',
+        'number' => 'Sayı',
+        'date' => 'Tarih',
+        'time' => 'Saat',
+        'select' => 'Seçim listesi',
+        'boolean' => 'Evet / Hayır',
+        _ => 'Metin',
+      };
+
+  Future<Map<String, dynamic>?> _showCustomFieldDialog({
+    Map<String, dynamic>? initial,
+  }) async {
+    final label = TextEditingController(text: initial?['label']?.toString() ?? '');
+    final placeholder = TextEditingController(text: initial?['placeholder']?.toString() ?? '');
+    final rawOptions = initial?['options'];
+    final options = TextEditingController(
+      text: rawOptions is List ? rawOptions.map((e) => e.toString()).join('\n') : '',
+    );
+    var type = initial == null ? 'text' : _normalizedFieldType(initial);
+    var required = initial?['required'] == true;
+    var enabled = initial?['enabled'] != false;
+    var showOnPanel = initial?['show_on_panel'] != false;
+    var showOnPdf = initial?['show_on_pdf'] != false;
+    var defaultToday = initial?['default_today'] == true;
+
     final result = await showDialog<Map<String, dynamic>>(
       context: context,
       builder: (dialogContext) => StatefulBuilder(
         builder: (context, setDialogState) => AlertDialog(
-          title: const Text('Yeni Form Alanı'),
+          title: Text(initial == null ? 'Yeni Form Alanı' : 'Form Alanını Düzenle'),
           content: SizedBox(
-            width: 420,
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                TextField(
-                  controller: label,
-                  autofocus: true,
-                  decoration: const InputDecoration(
-                    labelText: 'Alan adı',
-                    hintText: 'Örn. TDS Giriş, Tank Basıncı',
+            width: 500,
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  TextField(
+                    controller: label,
+                    autofocus: initial == null,
+                    decoration: const InputDecoration(
+                      labelText: 'Panelde / PDF’de yazacak başlık',
+                      hintText: 'Örn. Montaj Tarihi, TDS Giriş, Cihaz Seri No',
+                    ),
                   ),
-                ),
-                const SizedBox(height: 10),
-                SwitchListTile(
-                  contentPadding: EdgeInsets.zero,
-                  title: const Text('Zorunlu alan'),
-                  value: required,
-                  onChanged: (value) =>
-                      setDialogState(() => required = value),
-                ),
-              ],
+                  const SizedBox(height: 12),
+                  DropdownButtonFormField<String>(
+                    value: type,
+                    decoration: const InputDecoration(labelText: 'Alan tipi'),
+                    items: const [
+                      DropdownMenuItem(value: 'text', child: Text('Metin')),
+                      DropdownMenuItem(value: 'multiline', child: Text('Uzun metin')),
+                      DropdownMenuItem(value: 'number', child: Text('Sayı')),
+                      DropdownMenuItem(value: 'date', child: Text('Tarih')),
+                      DropdownMenuItem(value: 'time', child: Text('Saat')),
+                      DropdownMenuItem(value: 'select', child: Text('Seçim listesi')),
+                      DropdownMenuItem(value: 'boolean', child: Text('Evet / Hayır')),
+                    ],
+                    onChanged: (value) {
+                      if (value != null) setDialogState(() => type = value);
+                    },
+                  ),
+                  const SizedBox(height: 12),
+                  if (type != 'boolean')
+                    TextField(
+                      controller: placeholder,
+                      decoration: const InputDecoration(
+                        labelText: 'Yardım yazısı / örnek',
+                        hintText: 'Örn. Ölçülen değeri girin',
+                      ),
+                    ),
+                  if (type == 'select') ...[
+                    const SizedBox(height: 12),
+                    TextField(
+                      controller: options,
+                      minLines: 3,
+                      maxLines: 5,
+                      decoration: const InputDecoration(
+                        labelText: 'Seçenekler',
+                        helperText: 'Her satıra bir seçenek yazın.',
+                        alignLabelWithHint: true,
+                      ),
+                    ),
+                  ],
+                  if (type == 'date') ...[
+                    const SizedBox(height: 4),
+                    SwitchListTile(
+                      contentPadding: EdgeInsets.zero,
+                      title: const Text('Bugünün tarihini otomatik getir'),
+                      subtitle: const Text('Tekniker isterse tarihi değiştirebilir.'),
+                      value: defaultToday,
+                      onChanged: (value) => setDialogState(() => defaultToday = value),
+                    ),
+                  ],
+                  SwitchListTile(
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text('Zorunlu alan'),
+                    value: required,
+                    onChanged: (value) => setDialogState(() => required = value),
+                  ),
+                  SwitchListTile(
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text('Tekniker servis tamamlama panelinde göster'),
+                    value: showOnPanel,
+                    onChanged: (value) => setDialogState(() => showOnPanel = value),
+                  ),
+                  SwitchListTile(
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text('Servis PDF formunda göster'),
+                    value: showOnPdf,
+                    onChanged: (value) => setDialogState(() => showOnPdf = value),
+                  ),
+                  SwitchListTile(
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text('Alan aktif'),
+                    value: enabled,
+                    onChanged: (value) => setDialogState(() => enabled = value),
+                  ),
+                ],
+              ),
             ),
           ),
           actions: [
@@ -142,22 +244,53 @@ class _ServiceFormDesignerScreenState
               onPressed: () {
                 final text = label.text.trim();
                 if (text.isEmpty) return;
+                final parsedOptions = options.text
+                    .split(RegExp(r'[\n,;]+'))
+                    .map((e) => e.trim())
+                    .where((e) => e.isNotEmpty)
+                    .toSet()
+                    .toList(growable: false);
+                if (type == 'select' && parsedOptions.isEmpty) return;
                 Navigator.pop(dialogContext, {
-                  'id': 'custom_${DateTime.now().millisecondsSinceEpoch}',
+                  'id': initial?['id']?.toString().trim().isNotEmpty == true
+                      ? initial!['id'].toString()
+                      : 'custom_${DateTime.now().millisecondsSinceEpoch}',
                   'label': text,
+                  'type': type,
+                  'placeholder': placeholder.text.trim(),
+                  'options': type == 'select' ? parsedOptions : const <String>[],
                   'required': required,
-                  'enabled': true,
+                  'enabled': enabled,
+                  'show_on_panel': showOnPanel,
+                  'show_on_pdf': showOnPdf,
+                  'default_today': type == 'date' && defaultToday,
                 });
               },
-              child: const Text('Ekle'),
+              child: Text(initial == null ? 'Ekle' : 'Kaydet'),
             ),
           ],
         ),
       ),
     );
     label.dispose();
+    placeholder.dispose();
+    options.dispose();
+    return result;
+  }
+
+  Future<void> _addCustomField() async {
+    final result = await _showCustomFieldDialog();
     if (result == null) return;
     final fields = _customFields..add(result);
+    setState(() => _config['custom_fields'] = fields);
+  }
+
+  Future<void> _editCustomField(int index) async {
+    final fields = _customFields;
+    if (index < 0 || index >= fields.length) return;
+    final result = await _showCustomFieldDialog(initial: fields[index]);
+    if (result == null) return;
+    fields[index] = result;
     setState(() => _config['custom_fields'] = fields);
   }
 
@@ -180,7 +313,7 @@ class _ServiceFormDesignerScreenState
       ref.invalidate(companyAppSettingsProvider);
       if (!mounted) return;
       setState(() => _settings = next);
-      _message('Servis formu tasarımı kaydedildi. Yeni PDF formları bu şablonu kullanacak.');
+      _message('Servis formu tasarımı kaydedildi. Tekniker servis paneli ve yeni PDF formları bu şablonu kullanacak.');
     } catch (error) {
       if (!mounted) return;
       _message('Servis formu kaydedilemedi: $error', error: true);
@@ -195,7 +328,7 @@ class _ServiceFormDesignerScreenState
       role: AppRole.manager,
       title: 'Servis Formu Tasarımcısı',
       subtitle:
-          'Servis formunda görünen alanları, zorunlulukları ve bölüm sırasını yönetin.',
+          'Alanları burada tanımlayın; tekniker servis tamamlama paneli ve PDF formu otomatik olarak bu şablonu kullanır.',
       dark: true,
       actions: [
         FilledButton.icon(
@@ -346,7 +479,7 @@ class _ServiceFormDesignerScreenState
               ? const Padding(
                   padding: EdgeInsets.symmetric(vertical: 12),
                   child: Text(
-                    'Özel alan yok. TDS, tank basıncı veya firmaya özel başka bir alan ekleyebilirsiniz.',
+                    'Özel alan yok. Yeni alan eklediğinizde alan tipini ve Tekniker paneli / PDF görünürlüğünü seçebilirsiniz.',
                     style: TextStyle(color: Color(0xFF91A4B7)),
                   ),
                 )
@@ -354,18 +487,41 @@ class _ServiceFormDesignerScreenState
                   children: _customFields.asMap().entries.map((entry) {
                     final fields = _customFields;
                     final field = entry.value;
+                    final type = _normalizedFieldType(field);
+                    final placements = <String>[
+                      if (field['show_on_panel'] != false) 'Tekniker paneli',
+                      if (field['show_on_pdf'] != false) 'PDF',
+                    ];
                     return ListTile(
                       contentPadding: EdgeInsets.zero,
-                      leading: const Icon(Icons.text_fields_rounded),
+                      leading: Icon(type == 'date'
+                          ? Icons.calendar_month_outlined
+                          : type == 'number'
+                              ? Icons.numbers_rounded
+                              : type == 'select'
+                                  ? Icons.list_alt_outlined
+                                  : Icons.text_fields_rounded),
                       title: Text(field['label']?.toString() ?? 'Alan'),
-                      subtitle: Text(field['required'] == true ? 'Zorunlu' : 'İsteğe bağlı'),
-                      trailing: IconButton(
-                        tooltip: 'Kaldır',
-                        icon: const Icon(Icons.delete_outline, color: Color(0xFFFF6B6B)),
-                        onPressed: () {
-                          fields.removeAt(entry.key);
-                          setState(() => _config['custom_fields'] = fields);
-                        },
+                      subtitle: Text(
+                        '${_fieldTypeLabel(type)} • ${field['required'] == true ? 'Zorunlu' : 'İsteğe bağlı'} • ${placements.isEmpty ? 'Gösterim kapalı' : placements.join(' + ')}',
+                      ),
+                      trailing: Wrap(
+                        spacing: 2,
+                        children: [
+                          IconButton(
+                            tooltip: 'Düzenle',
+                            icon: const Icon(Icons.edit_outlined),
+                            onPressed: () => _editCustomField(entry.key),
+                          ),
+                          IconButton(
+                            tooltip: 'Kaldır',
+                            icon: const Icon(Icons.delete_outline, color: Color(0xFFFF6B6B)),
+                            onPressed: () {
+                              fields.removeAt(entry.key);
+                              setState(() => _config['custom_fields'] = fields);
+                            },
+                          ),
+                        ],
                       ),
                     );
                   }).toList(),
@@ -433,14 +589,37 @@ class _ServiceFormDesignerScreenState
                     const Text('Form No: ÖRNEK-0001'),
                     const Divider(height: 24),
                     ...order.expand((section) => _previewSection(section)),
-                    if (_customFields.isNotEmpty) ...[
+                    if (_flag('show_tds_in') || _flag('show_tds_out') || _flag('show_tank_pressure')) ...[
+                      const Divider(height: 24),
+                      const Text('Ölçüm Bilgileri', style: TextStyle(fontWeight: FontWeight.w900)),
+                      const SizedBox(height: 8),
+                      if (_flag('show_tds_in')) const Text('TDS Giriş: 350'),
+                      if (_flag('show_tds_out')) const Text('TDS Çıkış: 15'),
+                      if (_flag('show_tank_pressure')) const Text('Tank Basıncı: 7'),
+                    ],
+                    if (_customFields.any((f) => f['enabled'] != false && f['show_on_pdf'] != false)) ...[
                       const Divider(height: 24),
                       const Text('Özel Alanlar', style: TextStyle(fontWeight: FontWeight.w900)),
                       const SizedBox(height: 8),
-                      ..._customFields.map((f) => Padding(
-                            padding: const EdgeInsets.only(bottom: 6),
-                            child: Text('${f['label']}: ____________________'),
-                          )),
+                      ..._customFields.where((f) => f['enabled'] != false && f['show_on_pdf'] != false).map((f) {
+                        final type = _normalizedFieldType(f);
+                        final sample = switch (type) {
+                          'date' => '24.08.2026',
+                          'time' => '14:30',
+                          'number' => '125',
+                          'boolean' => 'Evet',
+                          'select' => (f['options'] is List && (f['options'] as List).isNotEmpty)
+                              ? (f['options'] as List).first.toString()
+                              : 'Seçim',
+                          _ => f['placeholder']?.toString().trim().isNotEmpty == true
+                              ? f['placeholder'].toString().trim()
+                              : '____________________',
+                        };
+                        return Padding(
+                          padding: const EdgeInsets.only(bottom: 6),
+                          child: Text('${f['label']}: $sample'),
+                        );
+                      }),
                     ],
                     if (_footerController.text.trim().isNotEmpty) ...[
                       const Divider(height: 28),

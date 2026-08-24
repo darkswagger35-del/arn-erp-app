@@ -12,11 +12,19 @@ class InventoryRepository {
     await ensureWarehouses();
     final rows = await _client
         .from('warehouses')
-        .select('id, name, type, is_active, assigned_technician_id, profiles!warehouses_assigned_technician_id_fkey(full_name)')
+        .select('id, name, type, is_active, assigned_technician_id, profiles!warehouses_assigned_technician_id_fkey(full_name, is_active, deleted_at)')
         .eq('is_active', true)
         .order('type')
         .order('name');
-    final items = List<Map<String, dynamic>>.from(rows).map(WarehouseItem.fromMap).toList();
+    final items = List<Map<String, dynamic>>.from(rows)
+        .where((row) {
+          if (row['type']?.toString() != 'vehicle') return true;
+          final profile = row['profiles'];
+          if (profile is! Map) return false;
+          return profile['is_active'] == true && profile['deleted_at'] == null;
+        })
+        .map(WarehouseItem.fromMap)
+        .toList();
     final unique = <String, WarehouseItem>{};
     for (final item in items) {
       final key = item.type == 'vehicle' && item.technicianId != null

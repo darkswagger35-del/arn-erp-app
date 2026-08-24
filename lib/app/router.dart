@@ -505,7 +505,11 @@ final routerProvider = Provider<GoRouter>((ref) {
       ),
       GoRoute(
         path: '/technician/jobs',
-        builder: (context, state) => const TechnicianJobsScreen(),
+        builder: (context, state) => TechnicianJobsScreen(
+          key: ValueKey(
+            'technician-jobs-${state.uri.queryParameters['refresh'] ?? 'base'}',
+          ),
+        ),
       ),
       GoRoute(
         path: '/technician/jobs/:serviceRequestId',
