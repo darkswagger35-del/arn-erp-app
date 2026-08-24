@@ -350,7 +350,10 @@ final routerProvider = Provider<GoRouter>((ref) {
       ),
       GoRoute(
         path: '/manager/service-planning',
-        builder: (context, state) => const ServicePlanningScreen(),
+        builder: (context, state) => ServicePlanningScreen(
+          initialFilter: state.uri.queryParameters['filter'],
+          initialTechnician: state.uri.queryParameters['technician'],
+        ),
       ),
       GoRoute(
         path: '/manager/service-documents',
@@ -462,7 +465,10 @@ final routerProvider = Provider<GoRouter>((ref) {
       ),
       GoRoute(
         path: '/secretary/service-planning',
-        builder: (context, state) => const ServicePlanningScreen(),
+        builder: (context, state) => ServicePlanningScreen(
+          initialFilter: state.uri.queryParameters['filter'],
+          initialTechnician: state.uri.queryParameters['technician'],
+        ),
       ),
       GoRoute(
         path: '/secretary/payments',

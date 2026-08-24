@@ -39,6 +39,18 @@ abstract class ServiceRequestRepository {
 
   Future<void> reopenCancelledService({required String serviceRequestId});
 
+  Future<String> sendOverdueToSecretary({
+    required String serviceRequestId,
+    String? secretaryId,
+  });
+
+  Future<String> recreateServiceFromRework({required String serviceRequestId});
+
+  Future<void> submitReworkToManager({
+    required String serviceRequestId,
+    ServiceRequestModel? snapshot,
+  });
+
   Future<void> deleteServiceRequest(String serviceRequestId);
 
   Future<void> deleteCompletedService(String serviceRequestId);

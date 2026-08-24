@@ -573,10 +573,26 @@ class _MorningPreparationPanel extends StatelessWidget {
             Text('Gerekli ${qty(e.value)}  •  Araçta ${qty(have)}', style: TextStyle(fontWeight: FontWeight.w700, color: diff > 0 ? const Color(0xFFD97706) : const Color(0xFF169B55))),
           ]));
         }).toList(growable: false);
-        final stockRows = vehicleProducts.where((p) => ((p['stock_quantity'] as num?)?.toDouble() ?? 0) > 0).take(8).map((p) => Padding(
-          padding: const EdgeInsets.only(bottom: 7),
-          child: Row(children: [Expanded(child: Text(p['name']?.toString() ?? '-')), Text(qty((p['stock_quantity'] as num?)?.toDouble() ?? 0), style: const TextStyle(fontWeight: FontWeight.w800))]),
-        )).toList(growable: false);
+        final stockRows = vehicleProducts
+            .where((p) => ((p['stock_quantity'] as num?)?.toDouble() ?? 0) != 0)
+            .take(10)
+            .map((p) {
+          final vehicle = (p['stock_quantity'] as num?)?.toDouble() ?? 0;
+          final main = (p['main_stock'] as num?)?.toDouble() ?? 0;
+          return Padding(
+            padding: const EdgeInsets.only(bottom: 7),
+            child: Row(children: [
+              Expanded(child: Text(p['name']?.toString() ?? '-')),
+              Text(
+                'Araç ${qty(vehicle)}${main > 0 ? ' • Merkez ${qty(main)}' : ''}',
+                style: TextStyle(
+                  fontWeight: FontWeight.w800,
+                  color: vehicle < 0 ? const Color(0xFFD97706) : null,
+                ),
+              ),
+            ]),
+          );
+        }).toList(growable: false);
         final alert = missing.isEmpty
           ? const Text('✓ Bugünkü planlanan ürünlere göre eksik görünmüyor.', style: TextStyle(color: Color(0xFF169B55), fontWeight: FontWeight.w800))
           : Text('Eksik: ${missing.map((e) => '${e.key} × ${qty(e.value)}').join(' • ')}', style: const TextStyle(color: Color(0xFFD97706), fontWeight: FontWeight.w900));

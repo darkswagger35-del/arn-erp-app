@@ -1,0 +1,26 @@
+ARN ERP - GECİKEN SERVİS / SEKRETER YENİDEN PLANLAMA V2
+
+Bu sürümde akış değişti:
+
+1. Yönetici geciken işi "Sekretere Gönder" ile yollar.
+2. Eski geciken servis geçmişte korunur.
+3. Sekreter için ayrı bir yeniden-planlama taslağı oluşur.
+4. Sekreter "Sekretere Gönderilen" sekmesinde:
+   - satırdaki kalem simgesinden servis türü / ürün / adet / fiyat / açıklamayı değiştirebilir,
+   - işleri tek tek işaretleyebilir,
+   - tümünü seçebilir,
+   - "Toplu Tarih" ile seçili işlere aynı tarihi verebilir,
+   - "Yöneticiye Gönder" ile seçili işleri topluca yönetici onayına yollar.
+5. Yöneticiye gönderilen servis "Onay Bekliyor" bölümüne geçer.
+6. Yönetici normal onay -> atama -> tekniker akışından devam eder.
+
+SUPABASE
+---------
+Daha önce 20260815_001_overdue_secretary_rework.sql çalıştırıldıysa yalnızca şu yeni migrationı çalıştırın:
+
+supabase/migrations/20260815_002_overdue_secretary_batch_replan.sql
+
+Yeni kurulumda migrationlar sırayla uygulanacağı için 001 ve 002 otomatik olarak birbirini tamamlar.
+
+ÖNEMLİ:
+002 migrationı, V1 ile daha önce sekretere gönderilmiş ve ekranda bekleyen mevcut kayıtları da otomatik olarak yeni taslak akışına dönüştürür. Mevcut bekleyen işler kaybolmaz.

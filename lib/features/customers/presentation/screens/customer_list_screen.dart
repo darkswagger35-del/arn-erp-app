@@ -987,12 +987,37 @@ class _CustomerPreviewState extends State<_CustomerPreview> {
       final rows = List<Map<String, dynamic>>.from(
         await client
             .from('service_requests')
-            .select('id, service_type, status, price, planned_date, created_at, updated_at')
+            .select('id, service_type, status, price, planned_date, created_at, updated_at, assigned_technician_id, assigned_technician_name_snapshot')
             .eq('customer_id', customerId)
             .order('created_at', ascending: false)
             .limit(10),
       );
-      items.addAll(rows.map(_RecentService.fromMap));
+      final technicianIds = rows
+          .map((row) => row['assigned_technician_id']?.toString() ?? '')
+          .where((id) => id.isNotEmpty)
+          .toSet()
+          .toList(growable: false);
+      final technicianNames = <String, String>{};
+      if (technicianIds.isNotEmpty) {
+        try {
+          final profiles = List<Map<String, dynamic>>.from(
+            await client.from('profiles').select('id, full_name').inFilter('id', technicianIds),
+          );
+          for (final profile in profiles) {
+            final id = profile['id']?.toString() ?? '';
+            final name = profile['full_name']?.toString().trim() ?? '';
+            if (id.isNotEmpty && name.isNotEmpty) technicianNames[id] = name;
+          }
+        } catch (_) {}
+      }
+      items.addAll(rows.map((row) {
+        final id = row['assigned_technician_id']?.toString() ?? '';
+        final snapshot = row['assigned_technician_name_snapshot']?.toString().trim() ?? '';
+        return _RecentService.fromMap(
+          row,
+          technicianName: technicianNames[id] ?? snapshot,
+        );
+      }));
     } catch (_) {
       // Güncel servis tablosu eski müşterilerde boş olabilir.
     }
@@ -1006,6 +1031,7 @@ class _CustomerPreviewState extends State<_CustomerPreview> {
             statusLabel: 'Tamamlandı',
             price: record.amount,
             date: record.performedAt,
+            technicianName: (record.technicianName ?? record.assignedUserName ?? '').trim(),
           ),
         );
       }
@@ -1029,6 +1055,7 @@ class _CustomerPreviewState extends State<_CustomerPreview> {
               statusLabel: 'Tamamlandı',
               price: (row['amount'] as num?)?.toDouble() ?? 0,
               date: DateTime.tryParse(row['transaction_date']?.toString() ?? ''),
+              technicianName: '',
             ),
           );
         }
@@ -1192,6 +1219,23 @@ class _CustomerPreviewState extends State<_CustomerPreview> {
                                       _ServiceStatusBadge(label: service.statusLabel),
                                     ],
                                   ),
+                                  if (service.technicianName.isNotEmpty) ...[
+                                    const SizedBox(height: 5),
+                                    Row(
+                                      children: <Widget>[
+                                        const Icon(Icons.engineering_outlined, size: 13, color: Color(0xFF7C5CE5)),
+                                        const SizedBox(width: 5),
+                                        Expanded(
+                                          child: Text(
+                                            'Tekniker: ${service.technicianName}',
+                                            maxLines: 1,
+                                            overflow: TextOverflow.ellipsis,
+                                            style: const TextStyle(fontSize: 10.5, fontWeight: FontWeight.w700, color: Color(0xFF66778A)),
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ],
                                   const SizedBox(height: 7),
                                   Row(
                                     children: <Widget>[
@@ -1300,14 +1344,19 @@ class _RecentService {
     required this.statusLabel,
     required this.price,
     required this.date,
+    this.technicianName = '',
   });
 
   final String typeLabel;
   final String statusLabel;
   final double price;
   final DateTime? date;
+  final String technicianName;
 
-  factory _RecentService.fromMap(Map<String, dynamic> map) {
+  factory _RecentService.fromMap(
+    Map<String, dynamic> map, {
+    String technicianName = '',
+  }) {
     return _RecentService(
       typeLabel: _serviceTypeLabel(map['service_type']?.toString()),
       statusLabel: _serviceStatusLabel(map['status']?.toString()),
@@ -1318,6 +1367,7 @@ class _RecentService {
             map['created_at']?.toString() ??
             '',
       ),
+      technicianName: technicianName.trim(),
     );
   }
 }

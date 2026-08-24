@@ -378,11 +378,20 @@ class ServiceExecutionRepository {
   }
 
   Future<List<Map<String, dynamic>>> getActiveProducts(String technicianId) async {
-    final rows = await _client.rpc(
-      'technician_vehicle_products_v11',
-      params: {'p_technician_id': technicianId},
-    );
-    return List<Map<String, dynamic>>.from(rows as List);
+    // V6 tekniker ekranı, yalnız araçta bulunanları değil firmanın aktif ürünlerini
+    // de gösterir. Böylece tekniker merkez depoda bulunan bir ürünü sahada
+    // kullanabilir; araç stoğu tamamlamada eksiye düşerek eksik malzeme olarak
+    // görünür. Yeni RPC henüz kurulmadıysa eski araç-stok RPC'sine geri düşeriz.
+    try {
+      final rows = await _client.rpc('technician_service_products_v1');
+      return List<Map<String, dynamic>>.from(rows as List);
+    } on PostgrestException {
+      final rows = await _client.rpc(
+        'technician_vehicle_products_v11',
+        params: {'p_technician_id': technicianId},
+      );
+      return List<Map<String, dynamic>>.from(rows as List);
+    }
   }
 
   Future<void> completeService({
@@ -397,26 +406,32 @@ class ServiceExecutionRepository {
     required String paymentMethod,
     required List<Map<String, dynamic>> items,
   }) async {
-    await _client.rpc(
-      'complete_service_v5',
-      params: {
-        'p_service_request_id': serviceRequestId,
-        'p_work_description': workDescription.trim(),
-        'p_service_amount': serviceAmount,
-        'p_extra_amount': extraAmount,
-        'p_collected_amount': collectedAmount,
-        'p_payment_method': paymentMethod,
-        'p_items': items
-            .map(
-              (item) => {
-                'product_id': item['product_id'],
-                'quantity': item['quantity'],
-                'unit_price': item['unit_price'],
-              },
-            )
-            .toList(growable: false),
-      },
-    );
+    final params = {
+      'p_service_request_id': serviceRequestId,
+      'p_work_description': workDescription.trim(),
+      'p_service_amount': serviceAmount,
+      'p_extra_amount': extraAmount,
+      'p_collected_amount': collectedAmount,
+      'p_payment_method': paymentMethod,
+      'p_items': items
+          .map(
+            (item) => {
+              'product_id': item['product_id'],
+              'quantity': item['quantity'],
+              'unit_price': item['unit_price'],
+            },
+          )
+          .toList(growable: false),
+    };
+
+    try {
+      await _client.rpc('technician_complete_service_v1', params: params);
+    } on PostgrestException {
+      // V6 SQL henüz kurulmadıysa mevcut servis kapatma fonksiyonu ile normal
+      // servisleri çalıştırmaya devam eder. Araç stoğunu eksiye düşürme özelliği
+      // için SUPABASE_V5_TEKNIKER_FINAL.sql kurulmalıdır.
+      await _client.rpc('complete_service_v5', params: params);
+    }
   }
 
 

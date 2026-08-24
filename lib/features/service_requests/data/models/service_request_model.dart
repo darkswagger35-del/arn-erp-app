@@ -211,8 +211,15 @@ class ServiceRequestModel {
     this.routeOrder,
     this.routePlanDate,
     this.cancellationReason = '',
+    this.technicianUnavailableReason = '',
+    this.technicianUnavailableNote = '',
     this.cancelledAt,
     this.cancelledByName = '',
+    this.reworkRequestedAt,
+    this.reworkSecretaryId,
+    this.reworkReason = '',
+    this.reworkCompletedAt,
+    this.replacementServiceRequestId,
   });
 
   final String? id;
@@ -243,8 +250,17 @@ class ServiceRequestModel {
   final int? routeOrder;
   final DateTime? routePlanDate;
   final String cancellationReason;
+  final String technicianUnavailableReason;
+  final String technicianUnavailableNote;
   final DateTime? cancelledAt;
   final String cancelledByName;
+  final DateTime? reworkRequestedAt;
+  final String? reworkSecretaryId;
+  final String reworkReason;
+  final DateTime? reworkCompletedAt;
+  final String? replacementServiceRequestId;
+
+  bool get isSecretaryRework => reworkRequestedAt != null && reworkCompletedAt == null;
 
   ServiceRequestModel copyWith({
     String? id,
@@ -275,8 +291,15 @@ class ServiceRequestModel {
     int? routeOrder,
     DateTime? routePlanDate,
     String? cancellationReason,
+    String? technicianUnavailableReason,
+    String? technicianUnavailableNote,
     DateTime? cancelledAt,
     String? cancelledByName,
+    DateTime? reworkRequestedAt,
+    String? reworkSecretaryId,
+    String? reworkReason,
+    DateTime? reworkCompletedAt,
+    String? replacementServiceRequestId,
   }) {
     return ServiceRequestModel(
       id: id ?? this.id,
@@ -309,8 +332,17 @@ class ServiceRequestModel {
       routeOrder: routeOrder ?? this.routeOrder,
       routePlanDate: routePlanDate ?? this.routePlanDate,
       cancellationReason: cancellationReason ?? this.cancellationReason,
+      technicianUnavailableReason:
+          technicianUnavailableReason ?? this.technicianUnavailableReason,
+      technicianUnavailableNote:
+          technicianUnavailableNote ?? this.technicianUnavailableNote,
       cancelledAt: cancelledAt ?? this.cancelledAt,
       cancelledByName: cancelledByName ?? this.cancelledByName,
+      reworkRequestedAt: reworkRequestedAt ?? this.reworkRequestedAt,
+      reworkSecretaryId: reworkSecretaryId ?? this.reworkSecretaryId,
+      reworkReason: reworkReason ?? this.reworkReason,
+      reworkCompletedAt: reworkCompletedAt ?? this.reworkCompletedAt,
+      replacementServiceRequestId: replacementServiceRequestId ?? this.replacementServiceRequestId,
     );
   }
 
@@ -347,10 +379,23 @@ class ServiceRequestModel {
           ? null
           : DateTime.tryParse(map['route_plan_date'].toString()),
       cancellationReason: map['cancellation_reason']?.toString() ?? '',
+      technicianUnavailableReason:
+          map['technician_unavailable_reason']?.toString() ?? '',
+      technicianUnavailableNote:
+          map['technician_unavailable_note']?.toString() ?? '',
       cancelledAt: map['cancelled_at'] == null
           ? null
           : DateTime.tryParse(map['cancelled_at'].toString()),
       cancelledByName: map['cancelled_by_name']?.toString() ?? '',
+      reworkRequestedAt: map['rework_requested_at'] == null
+          ? null
+          : DateTime.tryParse(map['rework_requested_at'].toString()),
+      reworkSecretaryId: map['rework_secretary_id']?.toString(),
+      reworkReason: map['rework_reason']?.toString() ?? '',
+      reworkCompletedAt: map['rework_completed_at'] == null
+          ? null
+          : DateTime.tryParse(map['rework_completed_at'].toString()),
+      replacementServiceRequestId: map['replacement_service_request_id']?.toString(),
     );
   }
 

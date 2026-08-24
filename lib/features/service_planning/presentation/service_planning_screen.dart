@@ -12,7 +12,14 @@ import '../../service_requests/presentation/providers/service_request_providers.
 enum _CalendarMode { day, week, month, list }
 
 class ServicePlanningScreen extends ConsumerStatefulWidget {
-  const ServicePlanningScreen({super.key});
+  const ServicePlanningScreen({
+    super.key,
+    this.initialFilter,
+    this.initialTechnician,
+  });
+
+  final String? initialFilter;
+  final String? initialTechnician;
 
   @override
   ConsumerState<ServicePlanningScreen> createState() =>
@@ -22,15 +29,26 @@ class ServicePlanningScreen extends ConsumerStatefulWidget {
 class _ServicePlanningScreenState extends ConsumerState<ServicePlanningScreen> {
   DateTime _anchor = DateTime.now();
   _CalendarMode _mode = _CalendarMode.day;
+  String _quickFilter = 'period';
   String _technicianFilter = 'Tümü';
   String? _selectedTechnician;
   String _technicianSearch = '';
   bool _showAllTechnicians = false;
+  bool _sendingToSecretary = false;
   late Future<List<ServiceRequestModel>> _future;
 
   @override
   void initState() {
     super.initState();
+    if (widget.initialFilter == 'overdue') {
+      _quickFilter = 'overdue';
+      _mode = _CalendarMode.list;
+    }
+    final initialTechnician = widget.initialTechnician?.trim() ?? '';
+    if (initialTechnician.isNotEmpty) {
+      _technicianFilter = initialTechnician;
+      _selectedTechnician = initialTechnician;
+    }
     _reload();
   }
 
@@ -65,8 +83,73 @@ class _ServicePlanningScreenState extends ConsumerState<ServicePlanningScreen> {
     }
   }
 
+  bool _isOverdue(ServiceRequestModel item) {
+    final planned = item.plannedDate?.toLocal();
+    if (planned == null) return false;
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    final plannedDay = DateTime(planned.year, planned.month, planned.day);
+    return plannedDay.isBefore(today) &&
+        item.status != ServiceRequestStatus.completed &&
+        item.status != ServiceRequestStatus.cancelled &&
+        item.status != ServiceRequestStatus.couldNotComplete &&
+        item.status != ServiceRequestStatus.deferred;
+  }
+
+  List<ServiceRequestModel> _applyQuickFilter(
+    List<ServiceRequestModel> items,
+  ) {
+    final now = DateTime.now();
+    switch (_quickFilter) {
+      case 'overdue':
+        return items.where(_isOverdue).toList(growable: false);
+      case 'today':
+      case 'today_technicians':
+        return items
+            .where((item) => _sameDay(item.plannedDate!.toLocal(), now))
+            .toList(growable: false);
+      case 'completed_today':
+        return items
+            .where(
+              (item) =>
+                  _sameDay(item.plannedDate!.toLocal(), now) &&
+                  item.status == ServiceRequestStatus.completed,
+            )
+            .toList(growable: false);
+      case 'in_progress_today':
+        return items
+            .where(
+              (item) =>
+                  _sameDay(item.plannedDate!.toLocal(), now) &&
+                  item.status == ServiceRequestStatus.inProgress,
+            )
+            .toList(growable: false);
+      default:
+        return items
+            .where((item) => _inCurrentPeriod(item.plannedDate!))
+            .toList(growable: false);
+    }
+  }
+
+  void _selectQuickFilter(String filter) {
+    setState(() {
+      _quickFilter = filter;
+      if (filter == 'overdue') {
+        _mode = _CalendarMode.list;
+        _technicianFilter = 'Tümü';
+        _selectedTechnician = null;
+      } else if (filter != 'period') {
+        _anchor = DateTime.now();
+        _mode = _CalendarMode.day;
+        _technicianFilter = 'Tümü';
+        _selectedTechnician = null;
+      }
+    });
+  }
+
   void _move(int direction) {
     setState(() {
+      _quickFilter = 'period';
       switch (_mode) {
         case _CalendarMode.day:
           _anchor = _anchor.add(Duration(days: direction));
@@ -137,14 +220,18 @@ class _ServicePlanningScreenState extends ConsumerState<ServicePlanningScreen> {
                 .toList()
               ..sort((a, b) => a.plannedDate!.compareTo(b.plannedDate!));
 
-            final technicians = all
+            final periodItems = _applyQuickFilter(all);
+
+            // Takvimde yalnızca seçili gün/hafta/ay/liste döneminde gerçekten işi
+            // bulunan teknisyenleri göster. Böylece 0 işi olan teknisyen kartları
+            // solda ve teknisyen filtresinde gereksiz yere görünmez.
+            final technicians = periodItems
                 .map((e) => e.assignedTechnicianName.trim())
                 .where((e) => e.isNotEmpty)
                 .toSet()
                 .toList()
               ..sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
 
-            final periodItems = all.where((e) => _inCurrentPeriod(e.plannedDate!)).toList();
             final filteredPeriodItems = _technicianFilter == 'Tümü'
                 ? periodItems
                 : periodItems
@@ -154,12 +241,11 @@ class _ServicePlanningScreenState extends ConsumerState<ServicePlanningScreen> {
             if (_selectedTechnician != null &&
                 !technicians.contains(_selectedTechnician)) {
               _selectedTechnician = null;
+              _technicianFilter = 'Tümü';
             }
 
             final selectedName = _selectedTechnician ??
-                (_technicianFilter != 'Tümü'
-                    ? _technicianFilter
-                    : (technicians.isNotEmpty ? technicians.first : null));
+                (_technicianFilter != 'Tümü' ? _technicianFilter : null);
 
             final selectedItems = selectedName == null
                 ? filteredPeriodItems
@@ -180,7 +266,11 @@ class _ServicePlanningScreenState extends ConsumerState<ServicePlanningScreen> {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
-                      _SummaryCards(items: all),
+                      _SummaryCards(
+                        items: all,
+                        selectedFilter: _quickFilter,
+                        onSelectFilter: _selectQuickFilter,
+                      ),
                       const SizedBox(height: 16),
                       _CalendarToolbar(
                         anchor: _anchor,
@@ -192,13 +282,21 @@ class _ServicePlanningScreenState extends ConsumerState<ServicePlanningScreen> {
                             _technicianFilter = value ?? 'Tümü';
                             if (_technicianFilter != 'Tümü') {
                               _selectedTechnician = _technicianFilter;
+                            } else {
+                              _selectedTechnician = null;
                             }
                           });
                         },
-                        onModeChanged: (value) => setState(() => _mode = value),
+                        onModeChanged: (value) => setState(() {
+                          _quickFilter = 'period';
+                          _mode = value;
+                        }),
                         onPrevious: () => _move(-1),
                         onNext: () => _move(1),
-                        onToday: () => setState(() => _anchor = DateTime.now()),
+                        onToday: () => setState(() {
+                          _quickFilter = 'period';
+                          _anchor = DateTime.now();
+                        }),
                         onPickDate: _pickDate,
                         onFilter: () => _showFilterInfo(context),
                       ),
@@ -233,13 +331,26 @@ class _ServicePlanningScreenState extends ConsumerState<ServicePlanningScreen> {
                               Expanded(
                                 child: _SchedulePanel(
                                   technicianName: selectedName,
+                                  sectionTitle: _quickFilter == 'overdue'
+                                      ? 'Geciken İşler'
+                                      : null,
                                   items: selectedItems,
                                   mode: _mode,
                                   anchor: _anchor,
-                                  onOpenRequests: () => context.go(
+                                  onOpenRequest: (_) => context.go(
                                       '${_routePrefix(role)}/service-requests'),
+                                  onOpenCustomer: (item) {
+                                    if (item.customerId.trim().isNotEmpty) {
+                                      context.push('${_routePrefix(role)}/customers/${item.customerId}');
+                                    }
+                                  },
+                                  onShowCancellation: _showCancellationReason,
                                   onNewJob: () => context.go(
                                       '${_routePrefix(role)}/customers'),
+                                  showSecretaryActions: (role == AppRole.admin || role == AppRole.manager) && _quickFilter == 'overdue',
+                                  busy: _sendingToSecretary,
+                                  onSendAll: () => _sendAllOverdueToSecretary(selectedItems),
+                                  onSendItem: _sendOverdueToSecretary,
                                 ),
                               ),
                             ],
@@ -264,13 +375,26 @@ class _ServicePlanningScreenState extends ConsumerState<ServicePlanningScreen> {
                         const SizedBox(height: 14),
                         _SchedulePanel(
                           technicianName: selectedName,
+                          sectionTitle: _quickFilter == 'overdue'
+                              ? 'Geciken İşler'
+                              : null,
                           items: selectedItems,
                           mode: _mode,
                           anchor: _anchor,
-                          onOpenRequests: () => context.go(
+                          onOpenRequest: (_) => context.go(
                               '${_routePrefix(role)}/service-requests'),
+                          onOpenCustomer: (item) {
+                            if (item.customerId.trim().isNotEmpty) {
+                              context.push('${_routePrefix(role)}/customers/${item.customerId}');
+                            }
+                          },
+                          onShowCancellation: _showCancellationReason,
                           onNewJob: () =>
                               context.go('${_routePrefix(role)}/customers'),
+                          showSecretaryActions: (role == AppRole.admin || role == AppRole.manager) && _quickFilter == 'overdue',
+                          busy: _sendingToSecretary,
+                          onSendAll: () => _sendAllOverdueToSecretary(selectedItems),
+                          onSendItem: _sendOverdueToSecretary,
                         ),
                       ],
                     ],
@@ -284,6 +408,143 @@ class _ServicePlanningScreenState extends ConsumerState<ServicePlanningScreen> {
     );
   }
 
+  Future<void> _showCancellationReason(ServiceRequestModel item) async {
+    final primaryParts = <String>[
+      item.cancellationReason.trim(),
+      item.technicianUnavailableReason.trim(),
+      item.technicianUnavailableNote.trim(),
+    ].where((e) => e.isNotEmpty).toSet().toList(growable: false);
+    final fallback = <String>[
+      item.completionNote.trim(),
+      item.description.trim(),
+    ].where((e) => e.isNotEmpty).toList(growable: false);
+    final reason = primaryParts.isNotEmpty
+        ? primaryParts.join('\n')
+        : (fallback.isNotEmpty
+            ? fallback.first
+            : 'İptal / tamamlanamama nedeni kaydedilmemiş.');
+    final actor = item.cancelledByName.trim();
+    final cancelledAt = item.cancelledAt?.toLocal();
+
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: Text(item.status == ServiceRequestStatus.couldNotComplete
+            ? 'Tamamlanamama Nedeni'
+            : 'İptal Nedeni'),
+        content: SizedBox(
+          width: 460,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                item.customerName.trim().isEmpty ? 'Müşteri' : item.customerName.trim(),
+                style: const TextStyle(fontWeight: FontWeight.w900, fontSize: 16),
+              ),
+              const SizedBox(height: 12),
+              Text(reason),
+              if (actor.isNotEmpty) ...[
+                const SizedBox(height: 12),
+                Text('İptal eden: $actor', style: const TextStyle(color: Color(0xFF65758A))),
+              ],
+              if (cancelledAt != null) ...[
+                const SizedBox(height: 4),
+                Text(
+                  'Tarih: ${DateFormat('dd.MM.yyyy HH:mm').format(cancelledAt)}',
+                  style: const TextStyle(color: Color(0xFF65758A)),
+                ),
+              ],
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: const Text('Kapat'),
+          ),
+          FilledButton.icon(
+            onPressed: item.customerId.trim().isEmpty
+                ? null
+                : () {
+                    Navigator.pop(dialogContext);
+                    context.push('${_routePrefix(ref.read(authControllerProvider).role ?? AppRole.manager)}/customers/${item.customerId}');
+                  },
+            icon: const Icon(Icons.person_outline_rounded),
+            label: const Text('Müşteri Kartı'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _sendOverdueToSecretary(ServiceRequestModel item) async {
+    if (_sendingToSecretary || item.id == null || !_isOverdue(item)) return;
+    setState(() => _sendingToSecretary = true);
+    try {
+      final secretary = await ref.read(serviceRequestRepositoryProvider).sendOverdueToSecretary(
+        serviceRequestId: item.id!,
+      );
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('${item.customerName} • $secretary sekretere gönderildi.')),
+      );
+      setState(_reload);
+    } catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Sekretere gönderilemedi: $error')),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _sendingToSecretary = false);
+    }
+  }
+
+  Future<void> _sendAllOverdueToSecretary(List<ServiceRequestModel> items) async {
+    if (_sendingToSecretary) return;
+    final overdue = items.where((item) => item.id != null && _isOverdue(item)).toList(growable: false);
+    if (overdue.isEmpty) return;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Tüm Gecikenleri Sekretere Gönder'),
+        content: Text('${overdue.length} geciken iş sekreterlere yeniden planlama için gönderilecek. Eski kayıtlar geçmişte kalacak; sekreter yeni tarih, servis türü, ürün ve fiyatı kontrol edip yönetici onayına gönderecek.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(dialogContext, false), child: const Text('Vazgeç')),
+          FilledButton.icon(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            icon: const Icon(Icons.forward_to_inbox_outlined),
+            label: const Text('Tümünü Gönder'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+
+    setState(() => _sendingToSecretary = true);
+    var success = 0;
+    var failed = 0;
+    try {
+      final repo = ref.read(serviceRequestRepositoryProvider);
+      for (final item in overdue) {
+        try {
+          await repo.sendOverdueToSecretary(serviceRequestId: item.id!);
+          success++;
+        } catch (_) {
+          failed++;
+        }
+      }
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(failed == 0 ? '$success geciken iş sekreterlere gönderildi.' : '$success iş gönderildi, $failed iş gönderilemedi.')),
+      );
+      setState(_reload);
+    } finally {
+      if (mounted) setState(() => _sendingToSecretary = false);
+    }
+  }
+
   Future<void> _pickDate() async {
     final picked = await showDatePicker(
       context: context,
@@ -292,7 +553,12 @@ class _ServicePlanningScreenState extends ConsumerState<ServicePlanningScreen> {
       lastDate: DateTime(2100),
       locale: const Locale('tr', 'TR'),
     );
-    if (picked != null && mounted) setState(() => _anchor = picked);
+    if (picked != null && mounted) {
+      setState(() {
+        _quickFilter = 'period';
+        _anchor = picked;
+      });
+    }
   }
 
   void _showHelp() {
@@ -324,8 +590,15 @@ class _ServicePlanningScreenState extends ConsumerState<ServicePlanningScreen> {
 }
 
 class _SummaryCards extends StatelessWidget {
-  const _SummaryCards({required this.items});
+  const _SummaryCards({
+    required this.items,
+    required this.selectedFilter,
+    required this.onSelectFilter,
+  });
+
   final List<ServiceRequestModel> items;
+  final String selectedFilter;
+  final ValueChanged<String> onSelectFilter;
 
   @override
   Widget build(BuildContext context) {
@@ -352,7 +625,9 @@ class _SummaryCards extends StatelessWidget {
       final plannedOnly = DateTime(planned.year, planned.month, planned.day);
       return plannedOnly.isBefore(todayOnly) &&
           item.status != ServiceRequestStatus.completed &&
-          item.status != ServiceRequestStatus.cancelled;
+          item.status != ServiceRequestStatus.cancelled &&
+          item.status != ServiceRequestStatus.couldNotComplete &&
+          item.status != ServiceRequestStatus.deferred;
     }).length;
 
     final cards = [
@@ -362,6 +637,7 @@ class _SummaryCards extends StatelessWidget {
         'Tüm teknisyenler',
         Icons.calendar_today_outlined,
         const Color(0xFF2F80ED),
+        'today',
       ),
       _MetricData(
         'Tamamlanan',
@@ -369,6 +645,7 @@ class _SummaryCards extends StatelessWidget {
         'Bugün',
         Icons.check_circle_outline_rounded,
         const Color(0xFF20A66A),
+        'completed_today',
       ),
       _MetricData(
         'Devam Eden',
@@ -376,6 +653,7 @@ class _SummaryCards extends StatelessWidget {
         'Şu anda',
         Icons.schedule_rounded,
         const Color(0xFFF59E0B),
+        'in_progress_today',
       ),
       _MetricData(
         'Teknisyen',
@@ -383,6 +661,7 @@ class _SummaryCards extends StatelessWidget {
         'Bugün görevli',
         Icons.person_outline_rounded,
         const Color(0xFF7C3AED),
+        'today_technicians',
       ),
       _MetricData(
         'Geciken',
@@ -390,6 +669,7 @@ class _SummaryCards extends StatelessWidget {
         'Plan tarihi geçen',
         Icons.warning_amber_rounded,
         const Color(0xFFE34D59),
+        'overdue',
       ),
     ];
 
@@ -410,7 +690,11 @@ class _SummaryCards extends StatelessWidget {
             childAspectRatio: columns == 5 ? 2.3 : 2.15,
           ),
           itemCount: cards.length,
-          itemBuilder: (context, index) => _MetricCard(data: cards[index]),
+          itemBuilder: (context, index) => _MetricCard(
+            data: cards[index],
+            selected: selectedFilter == cards[index].filter,
+            onTap: () => onSelectFilter(cards[index].filter),
+          ),
         );
       },
     );
@@ -418,72 +702,114 @@ class _SummaryCards extends StatelessWidget {
 }
 
 class _MetricData {
-  const _MetricData(this.label, this.value, this.detail, this.icon, this.color);
+  const _MetricData(
+    this.label,
+    this.value,
+    this.detail,
+    this.icon,
+    this.color,
+    this.filter,
+  );
   final String label;
   final String value;
   final String detail;
   final IconData icon;
   final Color color;
+  final String filter;
 }
 
 class _MetricCard extends StatelessWidget {
-  const _MetricCard({required this.data});
+  const _MetricCard({
+    required this.data,
+    required this.selected,
+    required this.onTap,
+  });
+
   final _MetricData data;
+  final bool selected;
+  final VoidCallback onTap;
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.all(15),
-      decoration: _panelDecoration(),
-      child: Row(
-        children: [
-          Container(
-            width: 48,
-            height: 48,
-            decoration: BoxDecoration(
-              color: data.color.withOpacity(.11),
-              shape: BoxShape.circle,
+    return Material(
+      color: Colors.white,
+      borderRadius: BorderRadius.circular(14),
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(14),
+        child: Container(
+          padding: const EdgeInsets.all(15),
+          decoration: BoxDecoration(
+            color: selected ? data.color.withOpacity(.045) : Colors.white,
+            borderRadius: BorderRadius.circular(14),
+            border: Border.all(
+              color: selected ? data.color : const Color(0xFFE1E8EF),
+              width: selected ? 1.5 : 1,
             ),
-            child: Icon(data.icon, color: data.color, size: 25),
+            boxShadow: const [
+              BoxShadow(
+                color: Color(0x0B102235),
+                blurRadius: 16,
+                offset: Offset(0, 5),
+              ),
+            ],
           ),
-          const SizedBox(width: 13),
-          Expanded(
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  data.label,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
-                    color: Color(0xFF526175),
-                    fontSize: 12,
-                    fontWeight: FontWeight.w600,
-                  ),
+          child: Row(
+            children: [
+              Container(
+                width: 48,
+                height: 48,
+                decoration: BoxDecoration(
+                  color: data.color.withOpacity(.11),
+                  shape: BoxShape.circle,
                 ),
-                const SizedBox(height: 2),
-                Text(
-                  data.value,
-                  style: const TextStyle(
-                    fontSize: 23,
-                    fontWeight: FontWeight.w900,
-                    color: Color(0xFF102033),
-                  ),
+                child: Icon(data.icon, color: data.color, size: 25),
+              ),
+              const SizedBox(width: 13),
+              Expanded(
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      data.label,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        color: Color(0xFF526175),
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      data.value,
+                      style: const TextStyle(
+                        fontSize: 23,
+                        fontWeight: FontWeight.w900,
+                        color: Color(0xFF102033),
+                      ),
+                    ),
+                    Text(
+                      data.detail,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        color: Color(0xFF8491A3),
+                        fontSize: 11,
+                      ),
+                    ),
+                  ],
                 ),
-                Text(
-                  data.detail,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
-                    color: Color(0xFF8491A3),
-                    fontSize: 11,
-                  ),
-                ),
-              ],
-            ),
+              ),
+              const Icon(
+                Icons.chevron_right_rounded,
+                size: 19,
+                color: Color(0xFF9AA7B5),
+              ),
+            ],
           ),
-        ],
+        ),
       ),
     );
   }
@@ -1054,19 +1380,33 @@ class _MiniCount extends StatelessWidget {
 class _SchedulePanel extends StatelessWidget {
   const _SchedulePanel({
     required this.technicianName,
+    this.sectionTitle,
     required this.items,
     required this.mode,
     required this.anchor,
-    required this.onOpenRequests,
+    required this.onOpenRequest,
+    required this.onOpenCustomer,
+    required this.onShowCancellation,
     required this.onNewJob,
+    required this.showSecretaryActions,
+    required this.busy,
+    required this.onSendAll,
+    required this.onSendItem,
   });
 
   final String? technicianName;
+  final String? sectionTitle;
   final List<ServiceRequestModel> items;
   final _CalendarMode mode;
   final DateTime anchor;
-  final VoidCallback onOpenRequests;
+  final ValueChanged<ServiceRequestModel> onOpenRequest;
+  final ValueChanged<ServiceRequestModel> onOpenCustomer;
+  final ValueChanged<ServiceRequestModel> onShowCancellation;
   final VoidCallback onNewJob;
+  final bool showSecretaryActions;
+  final bool busy;
+  final VoidCallback onSendAll;
+  final ValueChanged<ServiceRequestModel> onSendItem;
 
   @override
   Widget build(BuildContext context) {
@@ -1093,7 +1433,11 @@ class _SchedulePanel extends StatelessWidget {
                 const SizedBox(width: 10),
                 Expanded(
                   child: Text(
-                    technicianName ?? 'Tüm İşler',
+                    sectionTitle == null
+                        ? (technicianName ?? 'Tüm İşler')
+                        : technicianName == null
+                            ? '$sectionTitle • Tüm Teknikerler'
+                            : '$sectionTitle • $technicianName',
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                     style: const TextStyle(
@@ -1118,6 +1462,17 @@ class _SchedulePanel extends StatelessWidget {
                     ),
                   ),
                 ),
+                if (showSecretaryActions && items.isNotEmpty) ...[
+                  const SizedBox(width: 10),
+                  FilledButton.icon(
+                    onPressed: busy ? null : onSendAll,
+                    icon: busy
+                        ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                        : const Icon(Icons.forward_to_inbox_outlined, size: 18),
+                    label: const Text('Tümünü Sekretere Gönder'),
+                    style: FilledButton.styleFrom(backgroundColor: const Color(0xFFE14B4B), foregroundColor: Colors.white),
+                  ),
+                ],
                 const SizedBox(width: 10),
                 OutlinedButton.icon(
                   onPressed: () => _printHint(context),
@@ -1132,10 +1487,11 @@ class _SchedulePanel extends StatelessWidget {
             padding: EdgeInsets.symmetric(horizontal: 18, vertical: 10),
             child: Row(
               children: [
-                Expanded(flex: 25, child: Text('Müşteri', style: _headerStyle)),
-                Expanded(flex: 36, child: Text('Adres', style: _headerStyle)),
-                Expanded(flex: 19, child: Text('Durum', style: _headerStyle)),
-                Expanded(flex: 14, child: Text('Fiyat', style: _headerStyle)),
+                Expanded(flex: 22, child: Text('Müşteri', style: _headerStyle)),
+                Expanded(flex: 28, child: Text('Adres', style: _headerStyle)),
+                Expanded(flex: 20, child: Text('Tekniker', style: _headerStyle)),
+                Expanded(flex: 17, child: Text('Durum', style: _headerStyle)),
+                Expanded(flex: 13, child: Text('Fiyat', style: _headerStyle)),
                 SizedBox(width: 30),
               ],
             ),
@@ -1150,7 +1506,12 @@ class _SchedulePanel extends StatelessWidget {
                         const Divider(height: 1, color: Color(0xFFE9EEF3)),
                     itemBuilder: (context, index) => _ScheduleRow(
                       item: items[index],
-                      onTap: onOpenRequests,
+                      onOpenRequest: () => onOpenRequest(items[index]),
+                      onOpenCustomer: () => onOpenCustomer(items[index]),
+                      onShowCancellation: () => onShowCancellation(items[index]),
+                      showSecretaryAction: showSecretaryActions,
+                      busy: busy,
+                      onSendSecretary: () => onSendItem(items[index]),
                     ),
                   ),
           ),
@@ -1206,9 +1567,27 @@ class _SchedulePanel extends StatelessWidget {
 }
 
 class _ScheduleRow extends StatelessWidget {
-  const _ScheduleRow({required this.item, required this.onTap});
+  const _ScheduleRow({
+    required this.item,
+    required this.onOpenRequest,
+    required this.onOpenCustomer,
+    required this.onShowCancellation,
+    required this.showSecretaryAction,
+    required this.busy,
+    required this.onSendSecretary,
+  });
+
   final ServiceRequestModel item;
-  final VoidCallback onTap;
+  final VoidCallback onOpenRequest;
+  final VoidCallback onOpenCustomer;
+  final VoidCallback onShowCancellation;
+  final bool showSecretaryAction;
+  final bool busy;
+  final VoidCallback onSendSecretary;
+
+  bool get _isCancelled =>
+      item.status == ServiceRequestStatus.cancelled ||
+      item.status == ServiceRequestStatus.couldNotComplete;
 
   @override
   Widget build(BuildContext context) {
@@ -1220,83 +1599,166 @@ class _ScheduleRow extends StatelessWidget {
           .join(' / '),
     ].where((e) => e.isNotEmpty).join('\n');
 
-    return InkWell(
-      onTap: onTap,
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.center,
-          children: [
-            Expanded(
-              flex: 25,
-              child: Row(
-                children: [
-                  Container(
-                    width: 9,
-                    height: 9,
-                    decoration: BoxDecoration(color: color, shape: BoxShape.circle),
-                  ),
-                  const SizedBox(width: 9),
-                  Expanded(
-                    child: Text(
-                      item.customerName.trim().isEmpty
-                          ? 'Müşteri'
-                          : item.customerName.trim(),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                        fontWeight: FontWeight.w800,
-                        color: Color(0xFF17263A),
+    // Satırın tamamını tıklanabilir yapmıyoruz. Böylece özellikle iptal
+    // durumuna tıklarken kullanıcı yanlışlıkla Bölgeler & Rota gibi başka bir
+    // ekrana gitmez. Müşteri adı, durum rozeti ve üç nokta ayrı işlevlere sahip.
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.center,
+        children: [
+          Expanded(
+            flex: 22,
+            child: Row(
+              children: [
+                Container(
+                  width: 9,
+                  height: 9,
+                  decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+                ),
+                const SizedBox(width: 9),
+                Expanded(
+                  child: Tooltip(
+                    message: 'Müşteri kartını aç',
+                    child: InkWell(
+                      onTap: item.customerId.trim().isEmpty ? null : onOpenCustomer,
+                      borderRadius: BorderRadius.circular(6),
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 4),
+                        child: Text(
+                          item.customerName.trim().isEmpty
+                              ? 'Müşteri'
+                              : item.customerName.trim(),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                            fontWeight: FontWeight.w900,
+                            color: Color(0xFF17263A),
+                            decoration: TextDecoration.underline,
+                            decorationStyle: TextDecorationStyle.dotted,
+                          ),
+                        ),
                       ),
                     ),
                   ),
-                ],
+                ),
+              ],
+            ),
+          ),
+          Expanded(
+            flex: 28,
+            child: Text(
+              address.isEmpty ? 'Adres bilgisi yok' : address,
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(
+                color: Color(0xFF4C5C71),
+                height: 1.4,
+                fontSize: 11,
               ),
             ),
-            Expanded(
-              flex: 36,
-              child: Text(
-                address.isEmpty ? 'Adres bilgisi yok' : address,
-                maxLines: 2,
-                overflow: TextOverflow.ellipsis,
-                style: const TextStyle(
-                  color: Color(0xFF4C5C71),
-                  height: 1.4,
-                  fontSize: 11,
+          ),
+          Expanded(
+            flex: 20,
+            child: Row(
+              children: [
+                const Icon(
+                  Icons.person_outline_rounded,
+                  size: 15,
+                  color: Color(0xFF60758B),
+                ),
+                const SizedBox(width: 5),
+                Expanded(
+                  child: Text(
+                    item.assignedTechnicianName.trim().isEmpty
+                        ? 'Atanmadı'
+                        : item.assignedTechnicianName.trim(),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      color: item.assignedTechnicianName.trim().isEmpty
+                          ? const Color(0xFFE34D59)
+                          : const Color(0xFF405269),
+                      fontSize: 11,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          Expanded(
+            flex: 17,
+            child: Align(
+              alignment: Alignment.centerLeft,
+              child: Tooltip(
+                message: _isCancelled ? 'İptal nedenini göster' : _statusLabel(item.status),
+                child: InkWell(
+                  onTap: _isCancelled ? onShowCancellation : null,
+                  borderRadius: BorderRadius.circular(16),
+                  child: _StatusPill(status: item.status),
                 ),
               ),
             ),
-            Expanded(
-              flex: 19,
-              child: Align(
-                alignment: Alignment.centerLeft,
-                child: _StatusPill(status: item.status),
+          ),
+          Expanded(
+            flex: 13,
+            child: Text(
+              _money(item.price),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(
+                fontWeight: FontWeight.w800,
+                color: Color(0xFF29384D),
               ),
             ),
-            Expanded(
-              flex: 14,
-              child: Text(
-                _money(item.price),
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: const TextStyle(
-                  fontWeight: FontWeight.w800,
-                  color: Color(0xFF29384D),
+          ),
+          SizedBox(
+            width: 30,
+            child: PopupMenuButton<String>(
+              tooltip: 'İşlemler',
+              enabled: !busy,
+              onSelected: (value) {
+                if (value == 'send_secretary') {
+                  onSendSecretary();
+                } else if (value == 'customer') {
+                  onOpenCustomer();
+                } else if (value == 'cancel_reason') {
+                  onShowCancellation();
+                } else {
+                  onOpenRequest();
+                }
+              },
+              itemBuilder: (context) => [
+                const PopupMenuItem(
+                  value: 'open',
+                  child: Text('Servis talebini aç'),
                 ),
-              ),
+                if (item.customerId.trim().isNotEmpty)
+                  const PopupMenuItem(
+                    value: 'customer',
+                    child: Text('Müşteri kartını aç'),
+                  ),
+                if (_isCancelled)
+                  const PopupMenuItem(
+                    value: 'cancel_reason',
+                    child: Text('İptal nedenini göster'),
+                  ),
+                if (showSecretaryAction)
+                  const PopupMenuItem(
+                    value: 'send_secretary',
+                    child: Row(
+                      children: [
+                        Icon(Icons.forward_to_inbox_outlined, size: 18, color: Color(0xFFE14B4B)),
+                        SizedBox(width: 8),
+                        Text('Sekretere Gönder'),
+                      ],
+                    ),
+                  ),
+              ],
             ),
-            SizedBox(
-              width: 30,
-              child: PopupMenuButton<String>(
-                tooltip: 'İşlemler',
-                onSelected: (_) => onTap(),
-                itemBuilder: (context) => const [
-                  PopupMenuItem(value: 'open', child: Text('Servis talebini aç')),
-                ],
-              ),
-            ),
-          ],
-        ),
+          ),
+        ],
       ),
     );
   }

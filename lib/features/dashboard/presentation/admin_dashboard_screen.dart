@@ -76,6 +76,7 @@ class _AdminDashboardScreenState extends ConsumerState<AdminDashboardScreen> {
       _safePayments(start, end),
       _safeServiceRows(start, end, dateField: 'planned_date'),
       _safeServiceRows(start, end, dateField: 'created_at'),
+      _safeOverdueServices(),
     ]);
 
     return _DashboardBundle(
@@ -84,9 +85,86 @@ class _AdminDashboardScreenState extends ConsumerState<AdminDashboardScreen> {
       payments: results[2] as List<Map<String, dynamic>>,
       plannedServices: results[3] as List<Map<String, dynamic>>,
       createdServices: results[4] as List<Map<String, dynamic>>,
+      overdueServices: results[5] as List<Map<String, dynamic>>,
       rangeStart: start,
       rangeEnd: end,
     );
+  }
+
+  Future<List<Map<String, dynamic>>> _safeOverdueServices() async {
+    try {
+      final client = ref.read(operationsRepositoryProvider).client;
+      final now = DateTime.now();
+      final today = DateTime(now.year, now.month, now.day);
+      final rows = List<Map<String, dynamic>>.from(
+        await client
+            .from('service_requests')
+            .select(
+              'id, customer_id, assigned_technician_id, service_type, status, '
+              'price, planned_date',
+            )
+            .lt('planned_date', today.toUtc().toIso8601String())
+            .inFilter(
+              'status',
+              const ['pending', 'awaiting_approval', 'approved', 'assigned', 'in_progress'],
+            )
+            .order('planned_date', ascending: true)
+            .limit(500),
+      );
+
+      final customerIds = rows
+          .map((row) => row['customer_id']?.toString() ?? '')
+          .where((id) => id.isNotEmpty)
+          .toSet()
+          .toList(growable: false);
+      final technicianIds = rows
+          .map((row) => row['assigned_technician_id']?.toString() ?? '')
+          .where((id) => id.isNotEmpty)
+          .toSet()
+          .toList(growable: false);
+
+      final customerNames = <String, String>{};
+      if (customerIds.isNotEmpty) {
+        final customerRows = List<Map<String, dynamic>>.from(
+          await client
+              .from('customers')
+              .select('id, full_name, company_name')
+              .inFilter('id', customerIds),
+        );
+        for (final row in customerRows) {
+          final fullName = row['full_name']?.toString().trim() ?? '';
+          final companyName = row['company_name']?.toString().trim() ?? '';
+          customerNames[row['id'].toString()] =
+              fullName.isNotEmpty ? fullName : companyName;
+        }
+      }
+
+      final technicianNames = <String, String>{};
+      if (technicianIds.isNotEmpty) {
+        final profileRows = List<Map<String, dynamic>>.from(
+          await client
+              .from('profiles')
+              .select('id, full_name')
+              .inFilter('id', technicianIds),
+        );
+        for (final row in profileRows) {
+          technicianNames[row['id'].toString()] =
+              row['full_name']?.toString().trim() ?? '';
+        }
+      }
+
+      return rows.map((row) {
+        final customerId = row['customer_id']?.toString() ?? '';
+        final technicianId = row['assigned_technician_id']?.toString() ?? '';
+        return <String, dynamic>{
+          ...row,
+          'customer_name': customerNames[customerId] ?? 'Müşteri',
+          'technician_name': technicianNames[technicianId] ?? 'Atanmadı',
+        };
+      }).toList(growable: false);
+    } catch (_) {
+      return const <Map<String, dynamic>>[];
+    }
   }
 
   Future<Map<String, dynamic>> _safeWorkspace() async {
@@ -300,6 +378,9 @@ class _AdminDashboardScreenState extends ConsumerState<AdminDashboardScreen> {
                     bundle: bundle,
                     loading: snapshot.connectionState == ConnectionState.waiting,
                   ),
+                if (showPanel('summary')) const SizedBox(height: 14),
+                if (showPanel('summary'))
+                  _OverdueJobsPanel(rows: bundle.overdueServices),
                 if (showPanel('summary') &&
                     (showPanel('technician_performance') ||
                         showPanel('secretary_performance') ||
@@ -432,6 +513,7 @@ class _DashboardBundle {
     required this.payments,
     required this.plannedServices,
     required this.createdServices,
+    required this.overdueServices,
     required this.rangeStart,
     required this.rangeEnd,
   });
@@ -446,6 +528,7 @@ class _DashboardBundle {
       payments: const <Map<String, dynamic>>[],
       plannedServices: const <Map<String, dynamic>>[],
       createdServices: const <Map<String, dynamic>>[],
+      overdueServices: const <Map<String, dynamic>>[],
       rangeStart: rangeStart,
       rangeEnd: rangeEnd,
     );
@@ -456,11 +539,13 @@ class _DashboardBundle {
   final List<Map<String, dynamic>> payments;
   final List<Map<String, dynamic>> plannedServices;
   final List<Map<String, dynamic>> createdServices;
+  final List<Map<String, dynamic>> overdueServices;
   final DateTime rangeStart;
   final DateTime rangeEnd;
 
   int get activeCustomers => _int(workspace['active_customers']);
   int get activeServices => _int(workspace['assigned']) + _int(workspace['pending']);
+  int get overdueCount => overdueServices.length;
 
   int get jobCount => plannedServices.where((row) {
         final status = row['status']?.toString() ?? '';
@@ -628,6 +713,15 @@ class _SummaryCards extends StatelessWidget {
         onTap: () => context.go('/manager/service-planning'),
       ),
       _SummaryData(
+        title: 'Geciken İşler',
+        value: loading ? '…' : '${bundle.overdueCount}',
+        subtitle: 'Plan tarihi geçmiş açık servisler',
+        link: 'Gecikenleri Gör',
+        icon: Icons.warning_amber_rounded,
+        color: const Color(0xFFE34D59),
+        onTap: () => context.go('/manager/service-planning?filter=overdue'),
+      ),
+      _SummaryData(
         title: 'Bugünkü Ciro',
         value: loading ? '…' : money.format(bundle.revenue),
         subtitle: 'Seçili dönemde oluşan ciro',
@@ -649,8 +743,8 @@ class _SummaryCards extends StatelessWidget {
 
     return LayoutBuilder(
       builder: (context, constraints) {
-        final count = constraints.maxWidth >= 1120
-            ? 5
+        final count = constraints.maxWidth >= 1320
+            ? 6
             : constraints.maxWidth >= 760
                 ? 3
                 : constraints.maxWidth >= 500
@@ -971,6 +1065,157 @@ class _PerformanceRow extends StatelessWidget {
               ),
             ),
             const SizedBox(width: 4),
+            const Icon(Icons.chevron_right_rounded, size: 18, color: Color(0xFF8392A5)),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _OverdueJobsPanel extends StatelessWidget {
+  const _OverdueJobsPanel({required this.rows});
+
+  final List<Map<String, dynamic>> rows;
+
+  @override
+  Widget build(BuildContext context) {
+    final visible = rows.take(6).toList(growable: false);
+
+    return _WhitePanel(
+      title: 'Geciken İşler',
+      action: TextButton.icon(
+        onPressed: () => context.go('/manager/service-planning?filter=overdue'),
+        label: Text(rows.isEmpty ? 'Takvimi Aç' : 'Tümünü Gör (${rows.length})'),
+        icon: const Icon(Icons.arrow_forward_rounded, size: 16),
+      ),
+      child: Column(
+        children: [
+          const Padding(
+            padding: EdgeInsets.symmetric(horizontal: 14, vertical: 9),
+            child: Row(
+              children: [
+                Expanded(flex: 3, child: Text('Müşteri', style: _overdueHeaderStyle)),
+                Expanded(flex: 3, child: Text('Tekniker', style: _overdueHeaderStyle)),
+                Expanded(flex: 3, child: Text('Servis', style: _overdueHeaderStyle)),
+                Expanded(flex: 2, child: Text('Plan Tarihi', textAlign: TextAlign.center, style: _overdueHeaderStyle)),
+                Expanded(flex: 2, child: Text('Gecikme', textAlign: TextAlign.right, style: _overdueHeaderStyle)),
+                SizedBox(width: 24),
+              ],
+            ),
+          ),
+          const Divider(height: 1),
+          if (visible.isEmpty)
+            const _EmptyPanelText('Geciken açık servis bulunmuyor.')
+          else
+            for (final row in visible) _OverdueJobRow(row: row),
+        ],
+      ),
+    );
+  }
+
+  static const _overdueHeaderStyle = TextStyle(
+    color: Color(0xFF68798C),
+    fontSize: 10.5,
+    fontWeight: FontWeight.w700,
+  );
+}
+
+class _OverdueJobRow extends StatelessWidget {
+  const _OverdueJobRow({required this.row});
+
+  final Map<String, dynamic> row;
+
+  @override
+  Widget build(BuildContext context) {
+    final customer = row['customer_name']?.toString().trim() ?? '';
+    final technician = row['technician_name']?.toString().trim() ?? '';
+    final serviceType = row['service_type']?.toString().trim() ?? '';
+    final planned = DateTime.tryParse(row['planned_date']?.toString() ?? '')?.toLocal();
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    final plannedDay = planned == null
+        ? null
+        : DateTime(planned.year, planned.month, planned.day);
+    final daysLate = plannedDay == null ? 0 : today.difference(plannedDay).inDays;
+
+    final query = <String, String>{'filter': 'overdue'};
+    if (technician.isNotEmpty && technician != 'Atanmadı') {
+      query['technician'] = technician;
+    }
+    final target = Uri(
+      path: '/manager/service-planning',
+      queryParameters: query,
+    ).toString();
+
+    return InkWell(
+      onTap: () => context.go(target),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
+        child: Row(
+          children: [
+            Expanded(
+              flex: 3,
+              child: Text(
+                customer.isEmpty ? 'Müşteri' : customer,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 12),
+              ),
+            ),
+            Expanded(
+              flex: 3,
+              child: Row(
+                children: [
+                  const Icon(Icons.person_outline_rounded, size: 16, color: Color(0xFF60758B)),
+                  const SizedBox(width: 5),
+                  Expanded(
+                    child: Text(
+                      technician.isEmpty ? 'Atanmadı' : technician,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        fontSize: 11.5,
+                        fontWeight: FontWeight.w700,
+                        color: technician == 'Atanmadı'
+                            ? const Color(0xFFE34D59)
+                            : const Color(0xFF33475D),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            Expanded(
+              flex: 3,
+              child: Text(
+                serviceType.isEmpty ? 'Servis' : serviceType,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(fontSize: 11.5, color: Color(0xFF526175)),
+              ),
+            ),
+            Expanded(
+              flex: 2,
+              child: Text(
+                planned == null ? '-' : DateFormat('dd.MM.yyyy').format(planned),
+                textAlign: TextAlign.center,
+                style: const TextStyle(fontSize: 11.5, fontWeight: FontWeight.w700),
+              ),
+            ),
+            Expanded(
+              flex: 2,
+              child: Text(
+                daysLate <= 0 ? '-' : '$daysLate gün',
+                textAlign: TextAlign.right,
+                style: const TextStyle(
+                  color: Color(0xFFE34D59),
+                  fontWeight: FontWeight.w900,
+                  fontSize: 11.5,
+                ),
+              ),
+            ),
+            const SizedBox(width: 6),
             const Icon(Icons.chevron_right_rounded, size: 18, color: Color(0xFF8392A5)),
           ],
         ),

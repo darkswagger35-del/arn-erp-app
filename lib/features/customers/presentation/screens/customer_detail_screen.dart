@@ -44,12 +44,35 @@ class _CustomerDetailScreenState extends ConsumerState<CustomerDetailScreen> {
       final rows = await client
           .from('service_requests')
           .select(
-            'id, service_type, status, price, planned_date, created_at, updated_at, description, completion_note, cancellation_reason, technician_unavailable_reason, technician_unavailable_note, planned_product_id, planned_product_name, planned_quantity, planned_unit_price, service_items(product_name, quantity, unit_price, line_total)',
+            'id, service_type, status, price, planned_date, created_at, updated_at, description, completion_note, cancellation_reason, technician_unavailable_reason, technician_unavailable_note, planned_product_id, planned_product_name, planned_quantity, planned_unit_price, assigned_technician_id, assigned_technician_name_snapshot, service_items(product_name, quantity, unit_price, line_total)',
           )
           .eq('customer_id', widget.customerId)
           .order('created_at', ascending: false)
           .limit(50);
       services = List<Map<String, dynamic>>.from(rows);
+      final technicianIds = services
+          .map((row) => row['assigned_technician_id']?.toString() ?? '')
+          .where((id) => id.isNotEmpty)
+          .toSet()
+          .toList(growable: false);
+      final technicianNames = <String, String>{};
+      if (technicianIds.isNotEmpty) {
+        try {
+          final profiles = List<Map<String, dynamic>>.from(
+            await client.from('profiles').select('id, full_name').inFilter('id', technicianIds),
+          );
+          for (final profile in profiles) {
+            final id = profile['id']?.toString() ?? '';
+            final name = profile['full_name']?.toString().trim() ?? '';
+            if (id.isNotEmpty && name.isNotEmpty) technicianNames[id] = name;
+          }
+        } catch (_) {}
+      }
+      for (final row in services) {
+        final id = row['assigned_technician_id']?.toString() ?? '';
+        final snapshot = row['assigned_technician_name_snapshot']?.toString().trim() ?? '';
+        row['_technician_name'] = technicianNames[id] ?? snapshot;
+      }
     } catch (_) {
       // Eski müşteri kayıtları service_requests tablosunda bulunmayabilir.
     }
@@ -294,10 +317,12 @@ class _CustomerDetailScreenState extends ConsumerState<CustomerDetailScreen> {
           })
           .where((item) => item.isNotEmpty)
           .join(', ');
+      final technicianName = row['_technician_name']?.toString().trim() ?? '';
       final details = <String>[
         if (completionNote.isNotEmpty) completionNote,
         if (completionNote.isEmpty && description.isNotEmpty) description,
         if (productText.isNotEmpty) 'Ürün: $productText',
+        if (technicianName.isNotEmpty) 'Tekniker: $technicianName',
       ];
       entries.add(
         _CustomerHistoryEntry(
@@ -414,11 +439,13 @@ class _CustomerDetailScreenState extends ConsumerState<CustomerDetailScreen> {
       final qty = (row['planned_quantity'] as num?)?.toDouble() ?? 0;
       final unit = (row['planned_unit_price'] as num?)?.toDouble() ?? 0;
       final price = (row['price'] as num?)?.toDouble() ?? 0;
+      final technicianName = row['_technician_name']?.toString().trim() ?? '';
       final details = <String>[
         row['description']?.toString().trim().isNotEmpty == true ? row['description'].toString().trim() : 'Not yok',
         if (product.isNotEmpty) 'Ürün: $product${qty > 0 ? ' × ${qty.toStringAsFixed(qty == qty.roundToDouble() ? 0 : 2)}' : ''}',
         if (unit > 0) 'Birim: ${NumberFormat.currency(locale: 'tr_TR', symbol: '₺').format(unit)}',
         if (price > 0) 'Toplam: ${NumberFormat.currency(locale: 'tr_TR', symbol: '₺').format(price)}',
+        if (technicianName.isNotEmpty) 'Tekniker: $technicianName',
         label,
       ];
       final canEdit = widget.role == AppRole.secretary || widget.role == AppRole.admin || widget.role == AppRole.manager;
@@ -479,7 +506,7 @@ class _CustomerDetailScreenState extends ConsumerState<CustomerDetailScreen> {
     try {
       await Supabase.instance.client.from('service_requests').update({
         'service_type': result.serviceType,
-        'planned_date': result.plannedDate.toUtc().toIso8601String(),
+        'planned_date': result.plannedDate?.toUtc().toIso8601String(),
         'price': result.price,
         'description': result.description,
         'planned_product_id': result.productId,

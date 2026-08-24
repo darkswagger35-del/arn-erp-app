@@ -10,10 +10,12 @@ import 'package:url_launcher/url_launcher.dart';
 import 'package:webview_windows/webview_windows.dart';
 
 import '../../../core/auth/app_role.dart';
+import '../../../core/auth/auth_provider.dart';
 import '../../../core/widgets/management_shell.dart';
 import '../../settings/data/company_app_settings.dart';
 import '../data/service_execution_providers.dart';
 import '../data/service_execution_repository.dart';
+import 'technician_service_pdf.dart';
 
 class TechnicianJobsScreen extends ConsumerStatefulWidget {
   const TechnicianJobsScreen({super.key});
@@ -380,6 +382,42 @@ class _TechnicianJobsScreenState extends ConsumerState<TechnicianJobsScreen> {
     }
   }
 
+  Future<void> _shareCompletedPdf(TechnicianCompletedDetail detail) async {
+    final profile = ref.read(authControllerProvider).profile;
+    final technicianName = profile?.fullName.trim().isNotEmpty == true
+        ? profile!.fullName.trim()
+        : 'Tekniker';
+    final itemMaps = detail.items
+        .map(
+          (item) => <String, dynamic>{
+            'product_name': item.productName,
+            'quantity': item.quantity,
+            'unit_price': item.unitPrice,
+          },
+        )
+        .toList(growable: false);
+    final productTotal = detail.items.fold<double>(
+      0,
+      (sum, item) => sum + item.lineTotal,
+    );
+    final serviceAmount = math.max(0, detail.job.price - productTotal).toDouble();
+
+    await TechnicianServicePdf.share(
+      job: detail.job,
+      technicianName: technicianName,
+      serviceTypeLabel: _serviceTypeLabel(detail.job.serviceType),
+      description: detail.job.description,
+      completionNote: detail.job.completionNote,
+      items: itemMaps,
+      serviceAmount: serviceAmount,
+      extraAmount: 0,
+      totalAmount: detail.job.price,
+      paymentMethodLabel: detail.paymentMethod.isEmpty
+          ? '-'
+          : _paymentMethodLabel(detail.paymentMethod),
+    );
+  }
+
   Future<void> _showCompletedDetail(TechnicianJob job) async {
     showDialog<void>(
       context: context,
@@ -462,6 +500,21 @@ class _TechnicianJobsScreenState extends ConsumerState<TechnicianJobsScreen> {
             },
             icon: const Icon(Icons.badge_outlined),
             label: const Text('Müşteri Kartı'),
+          ),
+          OutlinedButton.icon(
+            onPressed: () async {
+              try {
+                await _shareCompletedPdf(detail!);
+              } catch (error) {
+                if (mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(content: Text('PDF paylaşılamadı: $error')),
+                  );
+                }
+              }
+            },
+            icon: const Icon(Icons.picture_as_pdf_outlined),
+            label: const Text('PDF Paylaş'),
           ),
           FilledButton(
             onPressed: () => Navigator.pop(dialogContext),

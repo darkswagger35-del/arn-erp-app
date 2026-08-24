@@ -31,7 +31,7 @@ class ServiceRequestEditResult {
   });
 
   final String serviceType;
-  final DateTime plannedDate;
+  final DateTime? plannedDate;
   final String? productId;
   final String productName;
   final double quantity;
@@ -63,6 +63,7 @@ Future<ServiceRequestEditResult?> showServiceRequestEditDialog({
   required double initialUnitPrice,
   required double initialPrice,
   required String initialDescription,
+  bool requirePlannedDate = true,
 }) async {
   List<ServiceEditProduct> products;
   try {
@@ -90,6 +91,7 @@ Future<ServiceRequestEditResult?> showServiceRequestEditDialog({
       initialUnitPrice: initialUnitPrice,
       initialPrice: initialPrice,
       initialDescription: initialDescription,
+      requirePlannedDate: requirePlannedDate,
     ),
   );
 }
@@ -106,6 +108,7 @@ class _ServiceRequestEditDialog extends StatefulWidget {
     required this.initialUnitPrice,
     required this.initialPrice,
     required this.initialDescription,
+    required this.requirePlannedDate,
   });
 
   final String title;
@@ -118,6 +121,7 @@ class _ServiceRequestEditDialog extends StatefulWidget {
   final double initialUnitPrice;
   final double initialPrice;
   final String initialDescription;
+  final bool requirePlannedDate;
 
   @override
   State<_ServiceRequestEditDialog> createState() => _ServiceRequestEditDialogState();
@@ -203,7 +207,7 @@ class _ServiceRequestEditDialogState extends State<_ServiceRequestEditDialog> {
   }
 
   void _save() {
-    if (_plannedDate == null) {
+    if (widget.requirePlannedDate && _plannedDate == null) {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Tarih ve saat zorunlu.')));
       return;
     }
@@ -221,7 +225,7 @@ class _ServiceRequestEditDialogState extends State<_ServiceRequestEditDialog> {
     Navigator.of(context).pop(
       ServiceRequestEditResult(
         serviceType: _serviceType,
-        plannedDate: _plannedDate!,
+        plannedDate: _plannedDate,
         productId: _selectedProduct!.id,
         productName: _selectedProduct!.name,
         quantity: qty,
@@ -257,7 +261,11 @@ class _ServiceRequestEditDialogState extends State<_ServiceRequestEditDialog> {
               InkWell(
                 onTap: _pickDateTime,
                 child: InputDecorator(
-                  decoration: const InputDecoration(labelText: 'Planlanan Tarih / Saat *'),
+                  decoration: InputDecoration(
+                    labelText: widget.requirePlannedDate
+                        ? 'Planlanan Tarih / Saat *'
+                        : 'Planlanan Tarih / Saat (toplu da verilebilir)',
+                  ),
                   child: Text(
                     _plannedDate == null
                         ? 'Tarih ve saat seçin'

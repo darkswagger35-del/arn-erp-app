@@ -43,9 +43,18 @@ class _ServiceRequestListScreenState
   String? _selectedCity;
   String? _selectedDistrict;
   bool? _locationSortAscending;
+  bool _overdueOnly = false;
+  bool _reworkOnly = false;
+  String? _sortKey;
+  bool _sortAscending = true;
+  final Map<String, Set<String>> _columnFilters = <String, Set<String>>{};
   int _page = 0;
   static const int _pageSize = 20;
   final Set<String> _selectedRequestIds = <String>{};
+  // V1'den kalan sekretere-gönderilmiş eski kayıtların üzerinde geçmiş tarih
+  // bulunabiliyor. Bu set, sekreterin bu oturumda gerçekten yeni tarih verdiğini
+  // takip eder; eski tarih yanlışlıkla yöneticiye geri gönderilmez.
+  final Set<String> _reworkDateTouchedIds = <String>{};
   bool _bulkBusy = false;
 
   @override
@@ -87,6 +96,61 @@ class _ServiceRequestListScreenState
     }
   }
 
+  bool _isOverdue(ServiceRequestModel request) {
+    final planned = request.plannedDate?.toLocal();
+    if (planned == null) return false;
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    final day = DateTime(planned.year, planned.month, planned.day);
+    return day.isBefore(today) &&
+        request.status != ServiceRequestStatus.completed &&
+        request.status != ServiceRequestStatus.cancelled &&
+        request.status != ServiceRequestStatus.couldNotComplete &&
+        request.status != ServiceRequestStatus.deferred;
+  }
+
+  bool _isArchivedReworkSource(ServiceRequestModel request) {
+    return request.status == ServiceRequestStatus.couldNotComplete &&
+        request.replacementServiceRequestId != null &&
+        request.reworkCompletedAt != null &&
+        !request.isSecretaryRework;
+  }
+
+  String _columnValue(ServiceRequestModel request, String key) {
+    switch (key) {
+      case 'customer':
+        return request.customerName.trim().isEmpty ? 'Müşteri bilgisi yok' : request.customerName.trim();
+      case 'location':
+        final city = request.customerCity.trim().isEmpty ? '-' : request.customerCity.trim();
+        final district = request.customerDistrict.trim().isEmpty ? '-' : request.customerDistrict.trim();
+        return '$city / $district';
+      case 'serviceType':
+        return request.serviceType.label;
+      case 'secretary':
+        return _creatorName(request);
+      case 'technician':
+        return request.assignedTechnicianName.trim().isEmpty ? 'Atanmadı' : request.assignedTechnicianName.trim();
+      case 'status':
+        return request.isSecretaryRework ? 'Sekretere Gönderildi' : request.status.label;
+      case 'createdDate':
+        return request.createdAt == null ? '-' : _formatDate(request.createdAt!.toLocal());
+      case 'plannedDate':
+        return request.plannedDate == null ? '-' : _formatDate(request.plannedDate!.toLocal());
+      default:
+        return '';
+    }
+  }
+
+  int _compareByKey(ServiceRequestModel a, ServiceRequestModel b, String key) {
+    if (key == 'createdDate') {
+      return (a.createdAt ?? DateTime(1970)).compareTo(b.createdAt ?? DateTime(1970));
+    }
+    if (key == 'plannedDate') {
+      return (a.plannedDate ?? DateTime(1970)).compareTo(b.plannedDate ?? DateTime(1970));
+    }
+    return _columnValue(a, key).toLowerCase().compareTo(_columnValue(b, key).toLowerCase());
+  }
+
   List<ServiceRequestModel> _visibleRequests(
     List<ServiceRequestModel> source,
   ) {
@@ -110,6 +174,8 @@ class _ServiceRequestListScreenState
           request.customerCity.trim().toLowerCase() == _selectedCity!.toLowerCase();
       final matchesDistrict = _selectedDistrict == null ||
           request.customerDistrict.trim().toLowerCase() == _selectedDistrict!.toLowerCase();
+      final matchesOverdue = !_overdueOnly || _isOverdue(request);
+      final matchesRework = !_reworkOnly || request.isSecretaryRework;
 
       final planned = request.plannedDate;
       final matchesDate = _dateRange == null ||
@@ -118,11 +184,24 @@ class _ServiceRequestListScreenState
               planned.isBefore(_startOfDay(_dateRange!.end)
                   .add(const Duration(days: 1))));
 
+      var matchesColumns = true;
+      for (final entry in _columnFilters.entries) {
+        if (!entry.value.contains(_columnValue(request, entry.key))) {
+          matchesColumns = false;
+          break;
+        }
+      }
+
       return matchesSearch && matchesType && matchesStatus &&
-          matchesTechnician && matchesCity && matchesDistrict && matchesDate;
+          matchesTechnician && matchesCity && matchesDistrict && matchesDate &&
+          matchesOverdue && matchesRework && matchesColumns;
     }).toList(growable: false);
 
     result.sort((a, b) {
+      if (_sortKey != null) {
+        final compared = _compareByKey(a, b, _sortKey!);
+        return _sortAscending ? compared : -compared;
+      }
       if (_locationSortAscending != null) {
         final aLocation = '${a.customerCity.trim()} ${a.customerDistrict.trim()}'.toLowerCase();
         final bLocation = '${b.customerCity.trim()} ${b.customerDistrict.trim()}'.toLowerCase();
@@ -137,8 +216,14 @@ class _ServiceRequestListScreenState
   }
 
   bool _canBulkSelect(ServiceRequestModel r) {
-    return r.id != null &&
-        r.status != ServiceRequestStatus.completed &&
+    if (r.id == null) return false;
+    if (widget.role == AppRole.secretary) {
+      return r.isSecretaryRework &&
+          r.status != ServiceRequestStatus.completed &&
+          r.status != ServiceRequestStatus.cancelled &&
+          r.status != ServiceRequestStatus.inProgress;
+    }
+    return r.status != ServiceRequestStatus.completed &&
         r.status != ServiceRequestStatus.cancelled &&
         r.status != ServiceRequestStatus.couldNotComplete &&
         r.status != ServiceRequestStatus.inProgress;
@@ -241,9 +326,175 @@ class _ServiceRequestListScreenState
         final old = r.plannedDate?.toLocal();
         final date = DateTime(picked.year, picked.month, picked.day, old?.hour ?? 0, old?.minute ?? 0);
         await repo.updateServiceRequest(r.copyWith(plannedDate: date));
+        if (r.id != null) _reworkDateTouchedIds.add(r.id!);
       }
       await _loadData();
     } finally { if (mounted) setState(() => _bulkBusy = false); }
+  }
+
+  Future<void> _submitReworkToManager(ServiceRequestModel request) async {
+    if (request.id == null || _bulkBusy || !request.isSecretaryRework) return;
+    final legacyNeedsFreshDate =
+        request.status == ServiceRequestStatus.couldNotComplete &&
+        !_reworkDateTouchedIds.contains(request.id);
+    if (request.plannedDate == null || legacyNeedsFreshDate) {
+      _showMessage('Önce bu servis için yeni tarihi belirleyin.');
+      return;
+    }
+    setState(() => _bulkBusy = true);
+    try {
+      await ref.read(serviceRequestRepositoryProvider).submitReworkToManager(
+        serviceRequestId: request.id!,
+        snapshot: request,
+      );
+      _selectedRequestIds.remove(request.id);
+      await _loadData();
+      if (mounted) {
+        _showMessage('${request.customerName} yönetici onayına gönderildi.');
+      }
+    } catch (error) {
+      if (mounted) _showMessage('Yöneticiye gönderilemedi: $error');
+    } finally {
+      if (mounted) setState(() => _bulkBusy = false);
+    }
+  }
+
+  Future<void> _bulkSubmitReworksToManager() async {
+    if (_selectedRequestIds.isEmpty || _bulkBusy) return;
+    final selected = ref
+        .read(serviceRequestControllerProvider)
+        .state
+        .serviceRequests
+        .where((r) =>
+            r.id != null &&
+            _selectedRequestIds.contains(r.id) &&
+            r.isSecretaryRework)
+        .toList(growable: false);
+    if (selected.isEmpty) {
+      _showMessage('Yöneticiye gönderilecek servis seçilmedi.');
+      return;
+    }
+    final missingDate = selected.where((r) {
+      if (r.plannedDate == null) return true;
+      return r.status == ServiceRequestStatus.couldNotComplete &&
+          !_reworkDateTouchedIds.contains(r.id);
+    }).toList();
+    if (missingDate.isNotEmpty) {
+      _showMessage('${missingDate.length} iş için yeni tarih seçilmedi. Önce Toplu Tarih ile tarih verin.');
+      return;
+    }
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Yöneticiye Gönder'),
+        content: Text(
+          '${selected.length} servis; seçtiğiniz yeni tarih, servis türü, ürün ve fiyat bilgileriyle yönetici onayına gönderilecek.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('Vazgeç'),
+          ),
+          FilledButton.icon(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            icon: const Icon(Icons.send_rounded),
+            label: const Text('Yöneticiye Gönder'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+
+    setState(() => _bulkBusy = true);
+    var success = 0;
+    var failed = 0;
+    Object? firstError;
+    try {
+      final repo = ref.read(serviceRequestRepositoryProvider);
+      for (final request in selected) {
+        try {
+          await repo.submitReworkToManager(
+            serviceRequestId: request.id!,
+            snapshot: request,
+          );
+          success++;
+          _reworkDateTouchedIds.remove(request.id);
+        } catch (error) {
+          firstError ??= error;
+          failed++;
+        }
+      }
+      _selectedRequestIds.clear();
+      await _loadData();
+      if (mounted) {
+        _showMessage(
+          failed == 0
+              ? '$success servis yönetici onayına gönderildi.'
+              : '$success servis gönderildi, $failed servis gönderilemedi. ${firstError ?? ''}',
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _bulkBusy = false);
+    }
+  }
+
+  Widget _buildSecretaryReworkBulkBar(List<ServiceRequestModel> filtered) {
+    final selectable = filtered.where(_canBulkSelect).toList(growable: false);
+    final allSelected = selectable.isNotEmpty &&
+        selectable.every((r) => _selectedRequestIds.contains(r.id));
+    return Container(
+      margin: const EdgeInsets.only(bottom: 12),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+      decoration: BoxDecoration(
+        color: const Color(0xFFF7F4FF),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: const Color(0xFFD9CFFF)),
+      ),
+      child: Wrap(
+        spacing: 10,
+        runSpacing: 8,
+        crossAxisAlignment: WrapCrossAlignment.center,
+        children: [
+          Checkbox(
+            value: allSelected,
+            onChanged: selectable.isEmpty
+                ? null
+                : (value) => setState(() {
+                      if (value == true) {
+                        _selectedRequestIds.addAll(selectable.map((e) => e.id!));
+                      } else {
+                        _selectedRequestIds.removeAll(selectable.map((e) => e.id!));
+                      }
+                    }),
+          ),
+          Text(
+            '${_selectedRequestIds.length} iş seçili',
+            style: const TextStyle(fontWeight: FontWeight.w800),
+          ),
+          OutlinedButton.icon(
+            onPressed: _bulkBusy || _selectedRequestIds.isEmpty ? null : _bulkSetDate,
+            icon: const Icon(Icons.event_rounded),
+            label: const Text('Toplu Tarih'),
+          ),
+          FilledButton.icon(
+            onPressed: _bulkBusy || _selectedRequestIds.isEmpty
+                ? null
+                : _bulkSubmitReworksToManager,
+            icon: const Icon(Icons.send_rounded),
+            label: const Text('Yöneticiye Gönder'),
+            style: FilledButton.styleFrom(
+              backgroundColor: const Color(0xFF7C5CE5),
+              foregroundColor: Colors.white,
+            ),
+          ),
+          const Text(
+            'Ürün / servis türü değiştiyse satırdaki kalem simgesinden düzenleyebilirsiniz.',
+            style: TextStyle(color: Color(0xFF6E6485), fontSize: 12),
+          ),
+        ],
+      ),
+    );
   }
 
   Future<void> _bulkDefer() async {
@@ -290,15 +541,93 @@ class _ServiceRequestListScreenState
         OutlinedButton.icon(onPressed:_bulkBusy||_selectedRequestIds.isEmpty?null:_bulkReturnToApproval, icon:const Icon(Icons.undo_rounded), label:const Text("Onay Bekliyor'a Geri Al")),
         OutlinedButton.icon(onPressed:_bulkBusy||_selectedRequestIds.isEmpty?null:_bulkSetDate, icon:const Icon(Icons.event), label:const Text('Toplu Tarih')),
         OutlinedButton.icon(onPressed:_bulkBusy||_selectedRequestIds.isEmpty?null:_bulkDefer, icon:const Icon(Icons.pause_circle_outline), label:const Text('Tehire Al')),
+        if (filtered.any(_isOverdue))
+          FilledButton.icon(
+            onPressed: _bulkBusy ? null : () => _sendAllOverdueToSecretary(filtered),
+            icon: const Icon(Icons.forward_to_inbox_outlined),
+            label: Text(_overdueOnly ? 'Tüm Gecikenleri Sekretere Gönder' : 'Gecikenleri Sekretere Gönder'),
+            style: FilledButton.styleFrom(backgroundColor: const Color(0xFFE14B4B), foregroundColor: Colors.white),
+          ),
       ]),
     );
+  }
+
+
+  Future<void> _sendOverdueToSecretary(ServiceRequestModel request) async {
+    if (request.id == null || _bulkBusy) return;
+    if (!_isOverdue(request)) {
+      _showMessage('Bu kayıt geciken aktif servis değil.');
+      return;
+    }
+    setState(() => _bulkBusy = true);
+    try {
+      final secretary = await ref.read(serviceRequestRepositoryProvider).sendOverdueToSecretary(
+        serviceRequestId: request.id!,
+      );
+      await _loadData();
+      if (mounted) _showMessage('${request.customerName} • $secretary sekretere yeniden planlama için gönderildi.');
+    } catch (error) {
+      if (mounted) _showMessage('Sekretere gönderilemedi: $error');
+    } finally {
+      if (mounted) setState(() => _bulkBusy = false);
+    }
+  }
+
+  Future<void> _sendAllOverdueToSecretary(List<ServiceRequestModel> source) async {
+    if (_bulkBusy) return;
+    final overdue = source.where((r) => r.id != null && _isOverdue(r)).toList(growable: false);
+    if (overdue.isEmpty) {
+      _showMessage('Gönderilecek geciken servis yok.');
+      return;
+    }
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Gecikenleri Sekretere Gönder'),
+        content: Text('${overdue.length} geciken iş ilgili sekretere yeniden planlama için gönderilecek. Eski kayıt geçmişte kalacak; sekreter yeni servis kaydının tarihini, servis türünü, ürününü ve fiyatını kontrol edip yönetici onayına gönderecek.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(dialogContext, false), child: const Text('Vazgeç')),
+          FilledButton.icon(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            icon: const Icon(Icons.forward_to_inbox_outlined),
+            label: const Text('Tümünü Gönder'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+
+    setState(() => _bulkBusy = true);
+    var success = 0;
+    var failed = 0;
+    try {
+      final repo = ref.read(serviceRequestRepositoryProvider);
+      for (final request in overdue) {
+        try {
+          await repo.sendOverdueToSecretary(serviceRequestId: request.id!);
+          success++;
+        } catch (_) {
+          failed++;
+        }
+      }
+      await _loadData();
+      if (mounted) {
+        _showMessage(failed == 0
+            ? '$success geciken iş sekreterlere gönderildi.'
+            : '$success iş gönderildi, $failed iş gönderilemedi.');
+      }
+    } finally {
+      if (mounted) setState(() => _bulkBusy = false);
+    }
   }
 
   @override
   Widget build(BuildContext context) {
     final controller = ref.watch(serviceRequestControllerProvider);
     final state = controller.state;
-    final all = state.serviceRequests;
+    final all = state.serviceRequests
+        .where((request) => !_isArchivedReworkSource(request))
+        .toList(growable: false);
     final filtered = _visibleRequests(all);
     final maxPage = filtered.isEmpty ? 0 : (filtered.length - 1) ~/ _pageSize;
     if (_page > maxPage) _page = maxPage;
@@ -340,6 +669,8 @@ class _ServiceRequestListScreenState
             const SizedBox(height: 14),
             _buildStatusTabs(all),
             if (_canManageApproval) _buildBulkBar(filtered),
+            if (widget.role == AppRole.secretary && filtered.any((r) => r.isSecretaryRework))
+              _buildSecretaryReworkBulkBar(filtered),
             _buildContentCard(
               state: state,
               filtered: filtered,
@@ -424,7 +755,25 @@ class _ServiceRequestListScreenState
       return date != null && _sameDay(date, today);
     }).length;
 
+    final overdueCount = requests.where(_isOverdue).length;
+
     final cards = [
+      _SummaryData(
+        label: 'Geciken',
+        value: overdueCount,
+        caption: 'Plan tarihi geçen',
+        icon: Icons.warning_amber_rounded,
+        color: const Color(0xFFE94A4A),
+        onTap: () {
+          setState(() {
+            _selectedStatus = null;
+            _dateRange = null;
+            _overdueOnly = true;
+            _reworkOnly = false;
+            _page = 0;
+          });
+        },
+      ),
       _SummaryData(
         label: 'Onay Bekleyen',
         value: _countStatus(requests, ServiceRequestStatus.pending),
@@ -442,6 +791,8 @@ class _ServiceRequestListScreenState
         onTap: () {
           setState(() {
             _selectedStatus = null;
+            _overdueOnly = false;
+            _reworkOnly = false;
             _dateRange = DateTimeRange(start: today, end: today);
             _page = 0;
           });
@@ -484,11 +835,13 @@ class _ServiceRequestListScreenState
 
     return LayoutBuilder(
       builder: (context, constraints) {
-        final count = constraints.maxWidth >= 1200
-            ? 6
-            : constraints.maxWidth >= 760
-                ? 3
-                : 2;
+        final count = constraints.maxWidth >= 1420
+            ? 7
+            : constraints.maxWidth >= 1200
+                ? 6
+                : constraints.maxWidth >= 760
+                    ? 3
+                    : 2;
         final width =
             (constraints.maxWidth - (count - 1) * 12) / count;
         return Wrap(
@@ -500,9 +853,13 @@ class _ServiceRequestListScreenState
                   width: width,
                   child: _SummaryCard(
                     data: card,
-                    selected: card.status != null &&
-                        _selectedStatus == card.status &&
-                        _dateRange == null,
+                    selected: card.label == 'Geciken'
+                        ? _overdueOnly
+                        : card.status != null &&
+                            _selectedStatus == card.status &&
+                            _dateRange == null &&
+                            !_overdueOnly &&
+                            !_reworkOnly,
                     onTap: card.onTap ??
                         () => _changeStatus(
                               _selectedStatus == card.status
@@ -630,49 +987,61 @@ class _ServiceRequestListScreenState
   }
 
   Widget _buildStatusTabs(List<ServiceRequestModel> requests) {
-    final tabs = <(String, ServiceRequestStatus?, int)>[
-      ('Tümü', null, requests.length),
-      (
-        'Onay Bekliyor',
-        ServiceRequestStatus.pending,
-        _countStatus(requests, ServiceRequestStatus.pending),
-      ),
-      (
-        'Atama Bekliyor',
-        ServiceRequestStatus.approved,
-        _countStatus(requests, ServiceRequestStatus.approved),
-      ),
-      (
-        'Tehir',
-        ServiceRequestStatus.deferred,
-        _countStatus(requests, ServiceRequestStatus.deferred),
-      ),
-      (
-        'Teknisyende',
-        ServiceRequestStatus.assigned,
-        _countStatus(requests, ServiceRequestStatus.assigned),
-      ),
-      (
-        'Devam Ediyor',
-        ServiceRequestStatus.inProgress,
-        _countStatus(requests, ServiceRequestStatus.inProgress),
-      ),
-      (
-        'Tamamlandı',
-        ServiceRequestStatus.completed,
-        _countStatus(requests, ServiceRequestStatus.completed),
-      ),
-      (
-        'İptal Edildi',
-        ServiceRequestStatus.cancelled,
-        _countStatus(requests, ServiceRequestStatus.cancelled),
-      ),
-      (
-        'Tamamlanamadı',
-        ServiceRequestStatus.couldNotComplete,
-        _countStatus(requests, ServiceRequestStatus.couldNotComplete),
-      ),
+    final tabs = <(String, String, ServiceRequestStatus?, int)>[
+      ('Tümü', 'all', null, requests.length),
+      ('Geciken', 'overdue', null, requests.where(_isOverdue).length),
+      if (widget.role != AppRole.technician)
+        ('Sekretere Gönderilen', 'rework', null, requests.where((r) => r.isSecretaryRework).length),
+      ('Onay Bekliyor', 'status', ServiceRequestStatus.pending, _countStatus(requests, ServiceRequestStatus.pending)),
+      ('Atama Bekliyor', 'status', ServiceRequestStatus.approved, _countStatus(requests, ServiceRequestStatus.approved)),
+      ('Tehir', 'status', ServiceRequestStatus.deferred, _countStatus(requests, ServiceRequestStatus.deferred)),
+      ('Teknisyende', 'status', ServiceRequestStatus.assigned, _countStatus(requests, ServiceRequestStatus.assigned)),
+      ('Devam Ediyor', 'status', ServiceRequestStatus.inProgress, _countStatus(requests, ServiceRequestStatus.inProgress)),
+      ('Tamamlandı', 'status', ServiceRequestStatus.completed, _countStatus(requests, ServiceRequestStatus.completed)),
+      ('İptal Edildi', 'status', ServiceRequestStatus.cancelled, _countStatus(requests, ServiceRequestStatus.cancelled)),
+      ('Tamamlanamadı', 'status', ServiceRequestStatus.couldNotComplete, _countStatus(requests, ServiceRequestStatus.couldNotComplete)),
     ];
+
+    bool isSelected((String, String, ServiceRequestStatus?, int) tab) {
+      switch (tab.$2) {
+        case 'all':
+          return _selectedStatus == null && !_overdueOnly && !_reworkOnly;
+        case 'overdue':
+          return _overdueOnly;
+        case 'rework':
+          return _reworkOnly;
+        default:
+          return !_overdueOnly && !_reworkOnly && _selectedStatus == tab.$3;
+      }
+    }
+
+    void select((String, String, ServiceRequestStatus?, int) tab) {
+      setState(() {
+        _page = 0;
+        _dateRange = null;
+        switch (tab.$2) {
+          case 'overdue':
+            _selectedStatus = null;
+            _overdueOnly = true;
+            _reworkOnly = false;
+            break;
+          case 'rework':
+            _selectedStatus = null;
+            _overdueOnly = false;
+            _reworkOnly = true;
+            break;
+          case 'status':
+            _selectedStatus = tab.$3;
+            _overdueOnly = false;
+            _reworkOnly = false;
+            break;
+          default:
+            _selectedStatus = null;
+            _overdueOnly = false;
+            _reworkOnly = false;
+        }
+      });
+    }
 
     return Container(
       padding: const EdgeInsets.fromLTRB(12, 8, 12, 0),
@@ -689,56 +1058,57 @@ class _ServiceRequestListScreenState
         scrollDirection: Axis.horizontal,
         child: Row(
           children: tabs.map((tab) {
-            final selected = _selectedStatus == tab.$2;
+            final selected = isSelected(tab);
+            final overdueTab = tab.$2 == 'overdue';
+            final reworkTab = tab.$2 == 'rework';
+            final selectedColor = overdueTab
+                ? const Color(0xFFE14B4B)
+                : reworkTab
+                    ? const Color(0xFF8A5CF6)
+                    : const Color(0xFF0797A9);
             return InkWell(
-              onTap: () => _changeStatus(tab.$2),
-              borderRadius:
-                  const BorderRadius.vertical(top: Radius.circular(10)),
+              onTap: () => select(tab),
+              borderRadius: const BorderRadius.vertical(top: Radius.circular(10)),
               child: Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
                 decoration: BoxDecoration(
                   border: Border(
                     bottom: BorderSide(
-                      color: selected
-                          ? const Color(0xFF0797A9)
-                          : Colors.transparent,
+                      color: selected ? selectedColor : Colors.transparent,
                       width: 3,
                     ),
                   ),
                 ),
                 child: Row(
                   children: [
+                    if (overdueTab || reworkTab) ...[
+                      Icon(
+                        overdueTab ? Icons.warning_amber_rounded : Icons.forward_to_inbox_outlined,
+                        size: 16,
+                        color: selected ? selectedColor : const Color(0xFF607086),
+                      ),
+                      const SizedBox(width: 5),
+                    ],
                     Text(
                       tab.$1,
                       style: TextStyle(
-                        fontWeight:
-                            selected ? FontWeight.w700 : FontWeight.w500,
-                        color: selected
-                            ? const Color(0xFF0797A9)
-                            : const Color(0xFF607086),
+                        fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
+                        color: selected ? selectedColor : const Color(0xFF607086),
                       ),
                     ),
                     const SizedBox(width: 7),
                     Container(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 7,
-                        vertical: 2,
-                      ),
+                      padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
                       decoration: BoxDecoration(
-                        color: selected
-                            ? const Color(0xFFDDF7FA)
-                            : const Color(0xFFF0F3F7),
+                        color: selected ? selectedColor.withOpacity(.12) : const Color(0xFFF0F3F7),
                         borderRadius: BorderRadius.circular(20),
                       ),
                       child: Text(
-                        '${tab.$3}',
+                        '${tab.$4}',
                         style: TextStyle(
                           fontSize: 12,
                           fontWeight: FontWeight.w700,
-                          color: selected
-                              ? const Color(0xFF0797A9)
-                              : const Color(0xFF607086),
+                          color: selected ? selectedColor : const Color(0xFF607086),
                         ),
                       ),
                     ),
@@ -825,12 +1195,218 @@ class _ServiceRequestListScreenState
   }
 
   String _creatorName(ServiceRequestModel request) {
-    final id = request.createdBy;
+    final id = request.isSecretaryRework && request.reworkSecretaryId?.trim().isNotEmpty == true
+        ? request.reworkSecretaryId
+        : request.createdBy;
     if (id == null || id.isEmpty) return '-';
     for (final user in _users) {
       if (user.id == id) return user.fullName.trim().isEmpty ? user.username : user.fullName;
     }
     return '-';
+  }
+
+  Widget _buildExcelColumnHeader({
+    required String key,
+    required String label,
+    bool dateColumn = false,
+  }) {
+    final filtered = _columnFilters.containsKey(key);
+    final sorted = _sortKey == key;
+    return InkWell(
+      onTap: () => _showExcelColumnOptions(key: key, label: label, dateColumn: dateColumn),
+      borderRadius: BorderRadius.circular(8),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 3, vertical: 8),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(label),
+            const SizedBox(width: 4),
+            if (sorted)
+              Icon(
+                _sortAscending ? Icons.arrow_upward_rounded : Icons.arrow_downward_rounded,
+                size: 14,
+                color: const Color(0xFF0797A9),
+              ),
+            Icon(
+              filtered ? Icons.filter_alt_rounded : Icons.arrow_drop_down_rounded,
+              size: 18,
+              color: filtered || sorted ? const Color(0xFF0797A9) : const Color(0xFF69788B),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _showExcelColumnOptions({
+    required String key,
+    required String label,
+    bool dateColumn = false,
+  }) async {
+    final source = ref.read(serviceRequestControllerProvider).state.serviceRequests;
+    final values = source.map((r) => _columnValue(r, key)).toSet().toList()
+      ..sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
+    final allValues = values.toSet();
+    final existing = _columnFilters[key];
+    var selected = existing == null
+        ? Set<String>.from(allValues)
+        : Set<String>.from(existing);
+    var tempSortKey = _sortKey;
+    var tempAscending = _sortAscending;
+    final searchController = TextEditingController();
+
+    final apply = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (context, setLocalState) {
+          final q = searchController.text.trim().toLowerCase();
+          final visible = values.where((v) => q.isEmpty || v.toLowerCase().contains(q)).toList(growable: false);
+          final allVisibleSelected = visible.isNotEmpty && visible.every(selected.contains);
+          return AlertDialog(
+            titlePadding: const EdgeInsets.fromLTRB(20, 18, 12, 6),
+            contentPadding: const EdgeInsets.fromLTRB(20, 8, 20, 4),
+            actionsPadding: const EdgeInsets.fromLTRB(12, 6, 12, 12),
+            title: Row(
+              children: [
+                Expanded(child: Text('$label • Sırala / Filtrele', style: const TextStyle(fontWeight: FontWeight.w800))),
+                IconButton(onPressed: () => Navigator.pop(dialogContext, false), icon: const Icon(Icons.close)),
+              ],
+            ),
+            content: SizedBox(
+              width: 420,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Expanded(
+                        child: OutlinedButton.icon(
+                          onPressed: () => setLocalState(() {
+                            tempSortKey = key;
+                            tempAscending = true;
+                          }),
+                          icon: const Icon(Icons.arrow_upward_rounded),
+                          label: Text(dateColumn ? 'Eskiden Yeniye' : 'A → Z'),
+                          style: OutlinedButton.styleFrom(
+                            backgroundColor: tempSortKey == key && tempAscending ? const Color(0xFFE9F9FB) : null,
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: OutlinedButton.icon(
+                          onPressed: () => setLocalState(() {
+                            tempSortKey = key;
+                            tempAscending = false;
+                          }),
+                          icon: const Icon(Icons.arrow_downward_rounded),
+                          label: Text(dateColumn ? 'Yeniden Eskiye' : 'Z → A'),
+                          style: OutlinedButton.styleFrom(
+                            backgroundColor: tempSortKey == key && !tempAscending ? const Color(0xFFE9F9FB) : null,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                  if (tempSortKey == key) ...[
+                    const SizedBox(height: 6),
+                    Align(
+                      alignment: Alignment.centerRight,
+                      child: TextButton.icon(
+                        onPressed: () => setLocalState(() => tempSortKey = null),
+                        icon: const Icon(Icons.sort_by_alpha_rounded, size: 17),
+                        label: const Text('Sıralamayı kaldır'),
+                      ),
+                    ),
+                  ],
+                  const Divider(height: 20),
+                  TextField(
+                    controller: searchController,
+                    onChanged: (_) => setLocalState(() {}),
+                    decoration: InputDecoration(
+                      prefixIcon: const Icon(Icons.search),
+                      hintText: '$label içinde ara...',
+                      isDense: true,
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  CheckboxListTile(
+                    dense: true,
+                    contentPadding: EdgeInsets.zero,
+                    value: allVisibleSelected,
+                    title: Text('Tümünü Seç (${visible.length})', style: const TextStyle(fontWeight: FontWeight.w800)),
+                    onChanged: (value) => setLocalState(() {
+                      if (value == true) {
+                        selected.addAll(visible);
+                      } else {
+                        selected.removeAll(visible);
+                      }
+                    }),
+                  ),
+                  const Divider(height: 1),
+                  ConstrainedBox(
+                    constraints: const BoxConstraints(maxHeight: 300),
+                    child: ListView.builder(
+                      shrinkWrap: true,
+                      itemCount: visible.length,
+                      itemBuilder: (context, index) {
+                        final value = visible[index];
+                        return CheckboxListTile(
+                          dense: true,
+                          contentPadding: EdgeInsets.zero,
+                          value: selected.contains(value),
+                          title: Text(value, maxLines: 1, overflow: TextOverflow.ellipsis),
+                          onChanged: (checked) => setLocalState(() {
+                            if (checked == true) {
+                              selected.add(value);
+                            } else {
+                              selected.remove(value);
+                            }
+                          }),
+                        );
+                      },
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () {
+                  setLocalState(() {
+                    selected = Set<String>.from(allValues);
+                    if (tempSortKey == key) tempSortKey = null;
+                  });
+                },
+                child: const Text('Temizle'),
+              ),
+              FilledButton(
+                onPressed: () => Navigator.pop(dialogContext, true),
+                style: FilledButton.styleFrom(backgroundColor: const Color(0xFF0797A9)),
+                child: const Text('Uygula'),
+              ),
+            ],
+          );
+        },
+      ),
+    );
+    searchController.dispose();
+
+    if (apply == true && mounted) {
+      setState(() {
+        if (selected.length == allValues.length) {
+          _columnFilters.remove(key);
+        } else {
+          _columnFilters[key] = selected;
+        }
+        _sortKey = tempSortKey;
+        _sortAscending = tempAscending;
+        _locationSortAscending = null;
+        _page = 0;
+      });
+    }
   }
 
   Widget _buildLocationColumnHeader() {
@@ -974,6 +1550,7 @@ class _ServiceRequestListScreenState
         _selectedCity = tempCity;
         _selectedDistrict = tempDistrict;
         _locationSortAscending = tempSort;
+        if (tempSort != null) _sortKey = null;
         _page = 0;
       });
     }
@@ -986,7 +1563,7 @@ class _ServiceRequestListScreenState
     return SingleChildScrollView(
       scrollDirection: Axis.horizontal,
       child: ConstrainedBox(
-        constraints: const BoxConstraints(minWidth: 1460),
+        constraints: const BoxConstraints(minWidth: 1520),
         child: DataTable(
           showCheckboxColumn: false,
           columnSpacing: 14,
@@ -998,14 +1575,14 @@ class _ServiceRequestListScreenState
           headingTextStyle: const TextStyle(fontWeight: FontWeight.w700, color: Color(0xFF526277)),
           columns: [
             const DataColumn(label: Text('')),
-            const DataColumn(label: Text('Müşteri')),
+            DataColumn(label: _buildExcelColumnHeader(key: 'customer', label: 'Müşteri')),
             DataColumn(label: _buildLocationColumnHeader()),
-            const DataColumn(label: Text('Servis Türü')),
-            const DataColumn(label: Text('Sekreter')),
-            const DataColumn(label: Text('Teknisyen')),
-            const DataColumn(label: Text('Durum')),
-            const DataColumn(label: Text('Oluşturma Tarihi')),
-            const DataColumn(label: Text('Atama Tarihi')),
+            DataColumn(label: _buildExcelColumnHeader(key: 'serviceType', label: 'Servis Türü')),
+            DataColumn(label: _buildExcelColumnHeader(key: 'secretary', label: 'Sekreter')),
+            DataColumn(label: _buildExcelColumnHeader(key: 'technician', label: 'Teknisyen')),
+            DataColumn(label: _buildExcelColumnHeader(key: 'status', label: 'Durum')),
+            DataColumn(label: _buildExcelColumnHeader(key: 'createdDate', label: 'Oluşturma Tarihi', dateColumn: true)),
+            DataColumn(label: _buildExcelColumnHeader(key: 'plannedDate', label: 'Atama Tarihi', dateColumn: true)),
             const DataColumn(label: Text('İşlemler')),
           ],
           rows: requests.map((request) => DataRow(
@@ -1013,9 +1590,30 @@ class _ServiceRequestListScreenState
             cells: [
               DataCell(Checkbox(
                 value: request.id != null && _selectedRequestIds.contains(request.id),
-                onChanged: request.id == null || !_canManageApproval || !_canBulkSelect(request) ? null : (v) => setState(() { if (v == true) { _selectedRequestIds.add(request.id!); } else { _selectedRequestIds.remove(request.id); } }),
+                onChanged: request.id == null || !(_canManageApproval || (widget.role == AppRole.secretary && request.isSecretaryRework)) || !_canBulkSelect(request) ? null : (v) => setState(() { if (v == true) { _selectedRequestIds.add(request.id!); } else { _selectedRequestIds.remove(request.id); } }),
               )),
-              DataCell(SizedBox(width: 185, child: _TwoLineText(primary: request.customerName.trim().isEmpty ? 'Müşteri bilgisi yok' : request.customerName, secondary: request.customerPhone.trim().isEmpty ? '#${_shortId(request.id)}' : request.customerPhone))),
+              DataCell(
+                SizedBox(
+                  width: 185,
+                  child: InkWell(
+                    onTap: request.customerId.trim().isEmpty
+                        ? null
+                        : () => context.push(_customerRoute(request.customerId)),
+                    borderRadius: BorderRadius.circular(6),
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 4),
+                      child: _TwoLineText(
+                        primary: request.customerName.trim().isEmpty
+                            ? 'Müşteri bilgisi yok'
+                            : request.customerName,
+                        secondary: request.customerPhone.trim().isEmpty
+                            ? '#${_shortId(request.id)}'
+                            : request.customerPhone,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
               DataCell(SizedBox(width: 150, child: _TwoLineText(primary: request.customerCity.trim().isEmpty ? '-' : request.customerCity, secondary: request.customerDistrict.trim().isEmpty ? '-' : request.customerDistrict))),
               DataCell(SizedBox(
                 width: 155,
@@ -1026,10 +1624,21 @@ class _ServiceRequestListScreenState
               )),
               DataCell(SizedBox(width: 135, child: Text(_creatorName(request), overflow: TextOverflow.ellipsis, style: const TextStyle(fontWeight: FontWeight.w600)))),
               DataCell(SizedBox(width: 165, child: _TechnicianCell(name: request.status == ServiceRequestStatus.pending ? '' : request.assignedTechnicianName))),
-              DataCell(_StatusBadge(status: request.status)),
+              DataCell(
+                request.isSecretaryRework
+                    ? const _ReworkBadge()
+                    : (request.status == ServiceRequestStatus.cancelled ||
+                            request.status == ServiceRequestStatus.couldNotComplete)
+                        ? InkWell(
+                            onTap: () => _showCancellationReasonDialog(request),
+                            borderRadius: BorderRadius.circular(14),
+                            child: _StatusBadge(status: request.status),
+                          )
+                        : _StatusBadge(status: request.status),
+              ),
               DataCell(Text(request.createdAt == null ? '-' : _formatDate(request.createdAt!.toLocal()))),
               DataCell(Text(request.plannedDate == null ? '-' : _formatDate(request.plannedDate!.toLocal()))),
-              DataCell(SizedBox(width: 180, child: Align(alignment: Alignment.centerRight, child: _buildRowActions(request, state.isSaving)))),
+              DataCell(SizedBox(width: 220, child: Align(alignment: Alignment.centerRight, child: _buildRowActions(request, state.isSaving)))),
             ],
           )).toList(),
         ),
@@ -1055,16 +1664,36 @@ class _ServiceRequestListScreenState
               children: [
                 _PriorityBadge(request: request),
                 const Spacer(),
-                _StatusBadge(status: request.status),
+                request.isSecretaryRework
+                    ? const _ReworkBadge()
+                    : (request.status == ServiceRequestStatus.cancelled ||
+                            request.status == ServiceRequestStatus.couldNotComplete)
+                        ? InkWell(
+                            onTap: () => _showCancellationReasonDialog(request),
+                            borderRadius: BorderRadius.circular(14),
+                            child: _StatusBadge(status: request.status),
+                          )
+                        : _StatusBadge(status: request.status),
               ],
             ),
             const SizedBox(height: 12),
-            Text(
-              request.customerName,
-              style: const TextStyle(
-                fontSize: 16,
-                fontWeight: FontWeight.w800,
-                color: Color(0xFF10233A),
+            InkWell(
+              onTap: request.customerId.trim().isEmpty
+                  ? null
+                  : () => context.push(_customerRoute(request.customerId)),
+              borderRadius: BorderRadius.circular(6),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(vertical: 2),
+                child: Text(
+                  request.customerName,
+                  style: const TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.w800,
+                    color: Color(0xFF10233A),
+                    decoration: TextDecoration.underline,
+                    decorationStyle: TextDecorationStyle.dotted,
+                  ),
+                ),
               ),
             ),
             const SizedBox(height: 5),
@@ -1109,7 +1738,8 @@ class _ServiceRequestListScreenState
         if (widget.role != AppRole.technician &&
             request.status != ServiceRequestStatus.completed &&
             request.status != ServiceRequestStatus.cancelled &&
-            request.status != ServiceRequestStatus.couldNotComplete)
+            (request.status != ServiceRequestStatus.couldNotComplete ||
+                (widget.role == AppRole.secretary && request.isSecretaryRework)))
           IconButton(
             tooltip: 'Servis talebini düzenle',
             onPressed: isSaving ? null : () => _editRequest(request),
@@ -1121,6 +1751,20 @@ class _ServiceRequestListScreenState
             onPressed: isSaving || _bulkBusy ? null : () => _approveRequest(request),
             color: const Color(0xFF0797A9),
             icon: const Icon(Icons.check_circle_outline_rounded),
+          ),
+        if (_canManageApproval && _isOverdue(request))
+          IconButton(
+            tooltip: 'Sekretere yeniden planlama için gönder',
+            onPressed: isSaving || _bulkBusy ? null : () => _sendOverdueToSecretary(request),
+            color: const Color(0xFFE14B4B),
+            icon: const Icon(Icons.forward_to_inbox_outlined),
+          ),
+        if (widget.role == AppRole.secretary && request.isSecretaryRework)
+          IconButton(
+            tooltip: 'Yönetici onayına gönder',
+            onPressed: isSaving || _bulkBusy ? null : () => _submitReworkToManager(request),
+            color: const Color(0xFF7C5CE5),
+            icon: const Icon(Icons.send_rounded),
           ),
         if (widget.role != AppRole.technician &&
             (request.status == ServiceRequestStatus.approved ||
@@ -1157,6 +1801,12 @@ class _ServiceRequestListScreenState
                 break;
               case 'approve':
                 _approveRequest(request);
+                break;
+              case 'send_secretary':
+                _sendOverdueToSecretary(request);
+                break;
+              case 'submit_rework':
+                _submitReworkToManager(request);
                 break;
               case 'defer':
                 if (request.id != null) {
@@ -1196,6 +1846,16 @@ class _ServiceRequestListScreenState
               const PopupMenuItem(
                 value: 'cancel',
                 child: ListTile(dense: true, leading: Icon(Icons.cancel_outlined), title: Text('İptal Et')),
+              ),
+            if (_canManageApproval && _isOverdue(request))
+              const PopupMenuItem(
+                value: 'send_secretary',
+                child: ListTile(dense: true, leading: Icon(Icons.forward_to_inbox_outlined), title: Text('Sekretere Gönder')),
+              ),
+            if (widget.role == AppRole.secretary && request.isSecretaryRework)
+              const PopupMenuItem(
+                value: 'submit_rework',
+                child: ListTile(dense: true, leading: Icon(Icons.send_rounded), title: Text('Yöneticiye Gönder')),
               ),
             const PopupMenuItem(
               value: 'customer',
@@ -1308,6 +1968,11 @@ class _ServiceRequestListScreenState
       _selectedCity = null;
       _selectedDistrict = null;
       _locationSortAscending = null;
+      _overdueOnly = false;
+      _reworkOnly = false;
+      _sortKey = null;
+      _sortAscending = true;
+      _columnFilters.clear();
       _dateRange = null;
       _page = 0;
     });
@@ -1317,8 +1982,79 @@ class _ServiceRequestListScreenState
   Future<void> _changeStatus(ServiceRequestStatus? status) async {
     setState(() {
       _selectedStatus = status;
+      _overdueOnly = false;
+      _reworkOnly = false;
       _page = 0;
     });
+  }
+
+  Future<void> _showCancellationReasonDialog(ServiceRequestModel request) async {
+    final primaryDetails = <String>[
+      request.cancellationReason.trim(),
+      request.technicianUnavailableReason.trim(),
+      request.technicianUnavailableNote.trim(),
+    ].where((e) => e.isNotEmpty).toSet().toList(growable: false);
+    final fallbackDetails = <String>[
+      request.completionNote.trim(),
+      request.description.trim(),
+    ].where((e) => e.isNotEmpty).toList(growable: false);
+    final reason = primaryDetails.isNotEmpty
+        ? primaryDetails.join('\n')
+        : (fallbackDetails.isNotEmpty
+            ? fallbackDetails.first
+            : 'İptal / tamamlanamama nedeni kaydedilmemiş.');
+
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: Text(request.status == ServiceRequestStatus.couldNotComplete
+            ? 'Tamamlanamama Nedeni'
+            : 'İptal Nedeni'),
+        content: SizedBox(
+          width: 460,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                request.customerName.trim().isEmpty
+                    ? 'Müşteri'
+                    : request.customerName.trim(),
+                style: const TextStyle(fontWeight: FontWeight.w900, fontSize: 16),
+              ),
+              const SizedBox(height: 12),
+              Text(reason),
+              if (request.cancelledByName.trim().isNotEmpty) ...[
+                const SizedBox(height: 12),
+                Text('İptal eden: ${request.cancelledByName}'),
+              ],
+              if (request.cancelledAt != null) ...[
+                const SizedBox(height: 4),
+                Text(
+                  'Tarih: ${_formatDate(request.cancelledAt!.toLocal())} ${_formatTime(request.cancelledAt!.toLocal())}',
+                ),
+              ],
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: const Text('Kapat'),
+          ),
+          FilledButton.icon(
+            onPressed: request.customerId.trim().isEmpty
+                ? null
+                : () {
+                    Navigator.pop(dialogContext);
+                    context.push(_customerRoute(request.customerId));
+                  },
+            icon: const Icon(Icons.person_outline_rounded),
+            label: const Text('Müşteri Kartı'),
+          ),
+        ],
+      ),
+    );
   }
 
   void _showDetails(ServiceRequestModel request) {
@@ -1364,7 +2100,7 @@ class _ServiceRequestListScreenState
                         ],
                       ),
                     ),
-                    _StatusBadge(status: request.status),
+                    request.isSecretaryRework ? const _ReworkBadge() : _StatusBadge(status: request.status),
                     IconButton(
                       onPressed: () => Navigator.pop(dialogContext),
                       icon: const Icon(Icons.close),
@@ -1511,9 +2247,38 @@ class _ServiceRequestListScreenState
                         label: const Text('Yeniden Servis Aç'),
                       ),
                     ],
+                    if (_canManageApproval && _isOverdue(request)) ...[
+                      const SizedBox(width: 10),
+                      FilledButton.icon(
+                        onPressed: () {
+                          Navigator.pop(dialogContext);
+                          _sendOverdueToSecretary(request);
+                        },
+                        icon: const Icon(Icons.forward_to_inbox_outlined),
+                        label: const Text('Sekretere Gönder'),
+                        style: FilledButton.styleFrom(backgroundColor: const Color(0xFFE14B4B), foregroundColor: Colors.white),
+                      ),
+                    ],
+                    if (widget.role == AppRole.secretary && request.isSecretaryRework) ...[
+                      const SizedBox(width: 10),
+                      FilledButton.icon(
+                        onPressed: () {
+                          Navigator.pop(dialogContext);
+                          _submitReworkToManager(request);
+                        },
+                        icon: const Icon(Icons.send_rounded),
+                        label: const Text('Yöneticiye Gönder'),
+                        style: FilledButton.styleFrom(
+                          backgroundColor: const Color(0xFF7C5CE5),
+                          foregroundColor: Colors.white,
+                        ),
+                      ),
+                    ],
                     if (widget.role != AppRole.technician &&
                         request.status != ServiceRequestStatus.completed &&
-                        request.status != ServiceRequestStatus.cancelled) ...[
+                        request.status != ServiceRequestStatus.cancelled &&
+                        request.status != ServiceRequestStatus.couldNotComplete &&
+                        !request.isSecretaryRework) ...[
                       const SizedBox(width: 10),
                       FilledButton.icon(
                         onPressed: () {
@@ -1683,7 +2448,9 @@ class _ServiceRequestListScreenState
 
     final result = await showServiceRequestEditDialog(
       context: context,
-      title: '${request.customerName} • Servis Talebini Düzenle',
+      title: request.isSecretaryRework && widget.role == AppRole.secretary
+          ? '${request.customerName} • Yeniden Planla'
+          : '${request.customerName} • Servis Talebini Düzenle',
       initialServiceType: request.serviceType.value,
       initialPlannedDate: request.plannedDate,
       initialProductId: request.plannedProductId,
@@ -1692,13 +2459,14 @@ class _ServiceRequestListScreenState
       initialUnitPrice: request.plannedUnitPrice,
       initialPrice: request.price,
       initialDescription: request.description,
+      requirePlannedDate: !(request.isSecretaryRework && widget.role == AppRole.secretary),
     );
     if (result == null || !mounted) return;
 
     try {
       await Supabase.instance.client.from('service_requests').update({
         'service_type': result.serviceType,
-        'planned_date': result.plannedDate.toUtc().toIso8601String(),
+        'planned_date': result.plannedDate?.toUtc().toIso8601String(),
         'description': result.description,
         'planned_product_id': result.productId,
         'planned_product_name': result.productName,
@@ -1708,7 +2476,16 @@ class _ServiceRequestListScreenState
         'updated_at': DateTime.now().toUtc().toIso8601String(),
       }).eq('id', request.id!);
       if (!mounted) return;
-      _showMessage('Servis talebi güncellendi.');
+      if (request.isSecretaryRework &&
+          widget.role == AppRole.secretary &&
+          result.plannedDate != null) {
+        _reworkDateTouchedIds.add(request.id!);
+      }
+      _showMessage(
+        request.isSecretaryRework && widget.role == AppRole.secretary
+            ? 'Yeni servis bilgileri kaydedildi. Hazır olduğunda yöneticiye gönderebilirsiniz.'
+            : 'Servis talebi güncellendi.',
+      );
       await _loadData();
     } catch (e) {
       if (!mounted) return;
@@ -2197,6 +2974,33 @@ class _TechnicianCell extends StatelessWidget {
           ),
         ),
       ],
+    );
+  }
+}
+
+class _ReworkBadge extends StatelessWidget {
+  const _ReworkBadge();
+
+  @override
+  Widget build(BuildContext context) {
+    const color = Color(0xFF7C5CE5);
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.12),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: const Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(Icons.forward_to_inbox_outlined, size: 14, color: color),
+          SizedBox(width: 5),
+          Text(
+            'Sekretere Gönderildi',
+            style: TextStyle(color: color, fontSize: 12, fontWeight: FontWeight.w700),
+          ),
+        ],
+      ),
     );
   }
 }

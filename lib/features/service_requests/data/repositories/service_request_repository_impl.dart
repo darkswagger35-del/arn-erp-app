@@ -13,9 +13,8 @@ class ServiceRequestRepositoryImpl implements ServiceRequestRepository {
     ServiceRequestStatus? status,
     String? technicianId,
   }) async {
-    dynamic query = _client.from('service_requests').select();
-
     final currentUser = _client.auth.currentUser;
+    var secretaryScope = false;
     if (currentUser != null) {
       try {
         final profile = await _client
@@ -23,25 +22,45 @@ class ServiceRequestRepositoryImpl implements ServiceRequestRepository {
             .select('role')
             .eq('id', currentUser.id)
             .maybeSingle();
-        if (profile?['role']?.toString() == 'secretary') {
-          // Savunma katmanı: RLS yanlış/eskimiş olsa bile sekreter yalnızca
-          // kendi açtığı servis kayıtlarını istemci tarafında da sorgular.
-          query = query.eq('created_by', currentUser.id);
-        }
+        secretaryScope = profile?['role']?.toString() == 'secretary';
       } catch (_) {
         // Asıl güvenlik Supabase RLS politikasındadır.
       }
     }
 
-    if (status != null) {
-      query = query.eq('status', status.value);
+    dynamic buildQuery({required bool includeReworkScope}) {
+      dynamic query = _client.from('service_requests').select();
+      if (secretaryScope && currentUser != null) {
+        query = includeReworkScope
+            ? query.or(
+                'created_by.eq.${currentUser.id},rework_secretary_id.eq.${currentUser.id}',
+              )
+            : query.eq('created_by', currentUser.id);
+      }
+      if (status != null) {
+        query = query.eq('status', status.value);
+      }
+      if (technicianId != null && technicianId.trim().isNotEmpty) {
+        query = query.eq('assigned_technician_id', technicianId.trim());
+      }
+      return query.order('created_at', ascending: false);
     }
 
-    if (technicianId != null && technicianId.trim().isNotEmpty) {
-      query = query.eq('assigned_technician_id', technicianId.trim());
+    dynamic response;
+    try {
+      response = await buildQuery(includeReworkScope: true);
+    } catch (error) {
+      // Yeni rework migrationı henüz uygulanmadıysa eski sürümde liste ekranını
+      // tamamen kırmayalım. Migration uygulandıktan sonra geniş sekreter kapsamı
+      // otomatik devreye girer.
+      final text = error.toString().toLowerCase();
+      if (secretaryScope && text.contains('rework_secretary_id')) {
+        response = await buildQuery(includeReworkScope: false);
+      } else {
+        rethrow;
+      }
     }
 
-    final response = await query.order('created_at', ascending: false);
     var requests = (response as List<dynamic>)
         .map(
           (item) => ServiceRequestModel.fromMap(item as Map<String, dynamic>),
@@ -105,6 +124,10 @@ class ServiceRequestRepositoryImpl implements ServiceRequestRepository {
 
       return requests
           .where((r) {
+            // Sekretere yeniden planlama için gönderilmiş aktif kuyruk kaydı,
+            // aynı müşteride başka yeni servis olsa bile sekreter işini tamamlayana
+            // kadar listeden kaybolmamalı.
+            if (r.isSecretaryRework) return true;
             final failedStatus = r.status == ServiceRequestStatus.couldNotComplete ||
                 r.status == ServiceRequestStatus.cancelled;
             return !failedStatus || !hasNewer(r);
@@ -420,6 +443,122 @@ class ServiceRequestRepositoryImpl implements ServiceRequestRepository {
     await _client.rpc('reopen_cancelled_service_v2', params: {
       'p_service_request_id': serviceRequestId,
     });
+  }
+
+  @override
+  Future<String> sendOverdueToSecretary({
+    required String serviceRequestId,
+    String? secretaryId,
+  }) async {
+    final result = await _client.rpc(
+      'send_overdue_service_to_secretary_v1',
+      params: {
+        'p_service_request_id': serviceRequestId,
+        'p_secretary_id': secretaryId,
+      },
+    );
+    if (result is Map) {
+      return result['secretary_name']?.toString() ?? 'Sekreter';
+    }
+    return 'Sekreter';
+  }
+
+  @override
+  Future<String> recreateServiceFromRework({required String serviceRequestId}) async {
+    final result = await _client.rpc(
+      'recreate_service_from_rework_v1',
+      params: {'p_service_request_id': serviceRequestId},
+    );
+    if (result is Map) {
+      return result['new_service_request_id']?.toString() ?? '';
+    }
+    return '';
+  }
+
+  @override
+  Future<void> submitReworkToManager({
+    required String serviceRequestId,
+    ServiceRequestModel? snapshot,
+  }) async {
+    final paramsV3 = <String, dynamic>{
+      'p_service_request_id': serviceRequestId,
+      if (snapshot != null) ...{
+        'p_planned_date': snapshot.plannedDate?.toUtc().toIso8601String(),
+        'p_service_type': snapshot.serviceType.value,
+        'p_description': snapshot.description.trim(),
+        'p_product_id': snapshot.plannedProductId,
+        'p_product_name': snapshot.plannedProductName.trim(),
+        'p_quantity': snapshot.plannedQuantity,
+        'p_unit_price': snapshot.plannedUnitPrice,
+        'p_price': snapshot.price,
+      },
+    };
+
+    try {
+      await _client.rpc(
+        'submit_rework_service_to_manager_v3',
+        params: paramsV3,
+      );
+      return;
+    } catch (error) {
+      final text = error.toString().toLowerCase();
+      final missingV3 = text.contains('submit_rework_service_to_manager_v3') &&
+          (text.contains('could not find') ||
+              text.contains('does not exist') ||
+              text.contains('pgrst202'));
+      if (!missingV3) rethrow;
+    }
+
+    // V2 migration kuruluysa mevcut taslak akışını kullan.
+    try {
+      await _client.rpc(
+        'submit_rework_service_to_manager_v2',
+        params: {'p_service_request_id': serviceRequestId},
+      );
+      return;
+    } catch (error) {
+      final text = error.toString().toLowerCase();
+      final missingV2 = text.contains('submit_rework_service_to_manager_v2') &&
+          (text.contains('could not find') ||
+              text.contains('does not exist') ||
+              text.contains('pgrst202'));
+      if (!missingV2) rethrow;
+    }
+
+    // Eski V1 veritabanlarında da sekreter akışını kilitlemeyelim. V1 RPC yeni
+    // pending kaydı üretir; ardından sekreterin seçtiği yeni tarih / ürün / fiyat
+    // bilgilerini bu yeni kayda taşırız.
+    final legacyResult = await _client.rpc(
+      'recreate_service_from_rework_v1',
+      params: {'p_service_request_id': serviceRequestId},
+    );
+    final newId = legacyResult is Map
+        ? legacyResult['new_service_request_id']?.toString() ?? ''
+        : '';
+    if (newId.isEmpty) {
+      throw const PostgrestException(
+        message: 'Yeniden planlanan servis oluşturulamadı.',
+        code: 'REWORK_CREATE_FAILED',
+      );
+    }
+
+    if (snapshot != null) {
+      await _client.from('service_requests').update({
+        'service_type': snapshot.serviceType.value,
+        'planned_date': snapshot.plannedDate?.toUtc().toIso8601String(),
+        'description': snapshot.description.trim(),
+        'planned_product_id': snapshot.plannedProductId,
+        'planned_product_name': snapshot.plannedProductName.trim(),
+        'planned_quantity': snapshot.plannedQuantity,
+        'planned_unit_price': snapshot.plannedUnitPrice,
+        'price': snapshot.price,
+        'assigned_technician_id': null,
+        'status': ServiceRequestStatus.pending.value,
+        'route_order': null,
+        'route_plan_date': null,
+        'updated_at': DateTime.now().toUtc().toIso8601String(),
+      }).eq('id', newId);
+    }
   }
 
   @override

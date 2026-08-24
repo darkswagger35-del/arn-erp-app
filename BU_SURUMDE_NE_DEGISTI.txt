@@ -1,0 +1,17 @@
+ARN ERP - 15.08.2026 V5 düzeltmeleri
+
+1) SEKRETER EKRANINDA "MÜŞTERİ BİLGİSİ YOK" DÜZELTİLDİ
+- Yönetici tarafından sekretere yeniden planlama için gönderilen servislerde müşteri başka kullanıcı tarafından açılmışsa eski RLS kuralı müşteri adını gizliyordu.
+- Sekreter artık yalnız kendisine servis/rework ilişkisi bulunan müşterinin ad-soyad, telefon ve adres bilgisini görebilir.
+- Diğer sekreterlerin ilgisiz müşterileri açılmaz; firma izolasyonu korunur.
+- Mevcut "Müşteri bilgisi yok" kayıtları silinmez veya yeniden oluşturulmaz; SQL çalıştırılıp ekran yenilendiğinde gerçek müşteri bilgisi görünür.
+
+KURULUM
+- Supabase > SQL Editor içinde SUPABASE_V4_MUSTERI_BILGISI_FIX.sql dosyasını bir kez çalıştırın.
+- Ardından uygulamada yenile düğmesine basın veya oturumu kapatıp açın.
+
+ÖNCEKİ V4 DÜZELTMELERİ KORUNDU
+- Sekreter -> Yönetici toplu yeniden planlama.
+- Takvimde işi olmayan teknisyenlerin gizlenmesi.
+- Müşteri adına tıklayınca müşteri kartının açılması.
+- İptal / tamamlanamadı nedeninin rozetten açılması.

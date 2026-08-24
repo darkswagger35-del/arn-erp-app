@@ -8,6 +8,7 @@ import '../data/service_execution_providers.dart';
 import '../data/service_execution_repository.dart';
 import '../../settings/data/company_app_settings.dart';
 import '../../service_requests/data/models/service_request_model.dart';
+import 'technician_service_pdf.dart';
 
 class ServiceExecutionScreen extends ConsumerStatefulWidget {
   const ServiceExecutionScreen({super.key, required this.serviceRequestId});
@@ -157,6 +158,10 @@ class _ServiceExecutionScreenState
     }
   }
 
+  String _stockLabel(double value) {
+    return value.toStringAsFixed(value % 1 == 0 ? 0 : 1);
+  }
+
   double _number(TextEditingController controller) {
     return double.tryParse(controller.text.trim().replaceAll(',', '.')) ?? 0;
   }
@@ -264,13 +269,6 @@ class _ServiceExecutionScreenState
   Future<void> _complete() async {
     if (!(_formKey.currentState?.validate() ?? false) || _job == null) return;
 
-    if (_appSettings.serviceRule('require_work_description', fallback: true) &&
-        _workController.text.trim().isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Yapılan işlem / tamamlama notu zorunludur.')),
-      );
-      return;
-    }
     if (_selectedServiceType == ServiceRequestType.filterChange &&
         _appSettings.serviceRule('require_product_for_filter_change', fallback: true) &&
         _selectedItems.isEmpty) {
@@ -316,12 +314,7 @@ class _ServiceExecutionScreenState
         completionNote: _workController.text,
       );
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Servis başarıyla tamamlandı.')),
-      );
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted) context.go('/technician/jobs?refresh=${DateTime.now().millisecondsSinceEpoch}');
-      });
+      await _showCompletionActions();
     } catch (error) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -330,6 +323,71 @@ class _ServiceExecutionScreenState
     } finally {
       if (mounted) setState(() => _saving = false);
     }
+  }
+
+  Future<void> _shareCompletedPdf() async {
+    final job = _job;
+    if (job == null) return;
+    final profile = ref.read(authControllerProvider).profile;
+    final technicianName = profile?.fullName.trim().isNotEmpty == true
+        ? profile!.fullName.trim()
+        : 'Tekniker';
+    await TechnicianServicePdf.share(
+      job: job,
+      technicianName: technicianName,
+      serviceTypeLabel: _selectedServiceType.label,
+      description: _descriptionController.text.trim(),
+      completionNote: _workController.text.trim(),
+      items: _selectedItems,
+      serviceAmount: _serviceTotal,
+      extraAmount: _extraTotal,
+      totalAmount: _grandTotal,
+      paymentMethodLabel: _paymentMethodLabel(_paymentMethod),
+    );
+  }
+
+  Future<void> _showCompletionActions() async {
+    final sendPdf = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogContext) => AlertDialog(
+        title: const Row(
+          children: [
+            Icon(Icons.check_circle_rounded, color: Color(0xFF18A566)),
+            SizedBox(width: 10),
+            Expanded(child: Text('Servis tamamlandı')),
+          ],
+        ),
+        content: const Text(
+          'Servis kaydedildi. PDF servis formunu şimdi müşteriye paylaşabilirsiniz. Telefonda paylaşım ekranından WhatsApp seçebilirsiniz.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('Listeye Dön'),
+          ),
+          FilledButton.icon(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            icon: const Icon(Icons.picture_as_pdf_outlined),
+            label: const Text('PDF Paylaş'),
+          ),
+        ],
+      ),
+    );
+
+    if (sendPdf == true) {
+      try {
+        await _shareCompletedPdf();
+      } catch (error) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('PDF paylaşılamadı: $error')),
+          );
+        }
+      }
+    }
+    if (!mounted) return;
+    context.go('/technician/jobs?refresh=${DateTime.now().millisecondsSinceEpoch}');
   }
 
   Future<void> _markIncomplete() async {
@@ -387,6 +445,139 @@ class _ServiceExecutionScreenState
     };
   }
 
+  Widget _selectedProductCard(Map<String, dynamic> product) {
+    final id = product['id'].toString();
+    final vehicleStock = (product['stock_quantity'] as num?)?.toDouble() ?? 0;
+    final mainStock = (product['main_stock'] as num?)?.toDouble() ?? 0;
+    final selectedQty = _quantities[id] ?? 0;
+    final projectedVehicleStock = vehicleStock - selectedQty;
+    const canChangeProducts = true;
+    const canChangePrice = true;
+
+    Widget quantityField() => SizedBox(
+          width: 90,
+          child: TextFormField(
+            key: ValueKey('qty-$id'),
+            readOnly: !canChangeProducts,
+            initialValue: selectedQty.toStringAsFixed(selectedQty % 1 == 0 ? 0 : 1),
+            textAlign: TextAlign.center,
+            keyboardType: const TextInputType.numberWithOptions(decimal: true),
+            decoration: const InputDecoration(labelText: 'Adet', isDense: true),
+            onChanged: canChangeProducts
+                ? (value) {
+                    setState(() {
+                      _quantities[id] = double.tryParse(value.replaceAll(',', '.')) ?? 0;
+                    });
+                  }
+                : null,
+            validator: (value) {
+              final quantity = double.tryParse((value ?? '').replaceAll(',', '.')) ?? 0;
+              if (quantity <= 0) return 'Adet';
+              return null;
+            },
+          ),
+        );
+
+    Widget priceField() => SizedBox(
+          width: 125,
+          child: TextFormField(
+            key: ValueKey('price-$id'),
+            readOnly: !canChangePrice,
+            initialValue: (_unitPrices[id] ?? 0) == 0
+                ? ''
+                : (_unitPrices[id] ?? 0).toStringAsFixed(2),
+            textAlign: TextAlign.center,
+            keyboardType: const TextInputType.numberWithOptions(decimal: true),
+            decoration: const InputDecoration(labelText: 'Fiyat (₺)', isDense: true),
+            onChanged: canChangePrice
+                ? (value) {
+                    setState(() {
+                      _unitPrices[id] = double.tryParse(value.replaceAll(',', '.')) ?? 0;
+                    });
+                  }
+                : null,
+            validator: (value) {
+              final price = double.tryParse((value ?? '').replaceAll(',', '.')) ?? 0;
+              if (price < 0) return 'Fiyat';
+              return null;
+            },
+          ),
+        );
+
+    final stockInfo = Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          product['name']?.toString() ?? '-',
+          style: const TextStyle(fontWeight: FontWeight.w700),
+        ),
+        const SizedBox(height: 3),
+        Text(
+          'Araç: ${_stockLabel(vehicleStock)}  •  Merkez: ${_stockLabel(mainStock)}',
+          style: const TextStyle(fontSize: 12, color: Color(0xFF66788A)),
+        ),
+        if (projectedVehicleStock < 0)
+          Padding(
+            padding: const EdgeInsets.only(top: 4),
+            child: Text(
+              'Bu kullanım sonrası araç stoğu ${_stockLabel(projectedVehicleStock)} olacak.',
+              style: const TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w700,
+                color: Color(0xFFD2691E),
+              ),
+            ),
+          ),
+      ],
+    );
+
+    return Card(
+      margin: const EdgeInsets.only(bottom: 8),
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: LayoutBuilder(
+          builder: (context, constraints) {
+            if (constraints.maxWidth < 560) {
+              return Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  stockInfo,
+                  const SizedBox(height: 10),
+                  Row(
+                    children: [
+                      Expanded(child: quantityField()),
+                      const SizedBox(width: 8),
+                      Expanded(child: priceField()),
+                      IconButton(
+                        tooltip: 'Ürünü kaldır',
+                        onPressed: canChangeProducts ? () => _removeProduct(id) : null,
+                        icon: const Icon(Icons.delete_outline),
+                      ),
+                    ],
+                  ),
+                ],
+              );
+            }
+            return Row(
+              children: [
+                Expanded(flex: 3, child: stockInfo),
+                const SizedBox(width: 10),
+                quantityField(),
+                const SizedBox(width: 8),
+                priceField(),
+                IconButton(
+                  tooltip: 'Ürünü kaldır',
+                  onPressed: canChangeProducts ? () => _removeProduct(id) : null,
+                  icon: const Icon(Icons.delete_outline),
+                ),
+              ],
+            );
+          },
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     if (_loading) {
@@ -403,10 +594,7 @@ class _ServiceExecutionScreenState
 
     // Tekniker sahada müşteri talebini ve servis açıklamasını güncelleyebilir.
     const canEditService = true;
-    final canChangeProducts = _appSettings.serviceRule(
-      'technician_can_change_products',
-      fallback: true,
-    );
+    const canChangeProducts = true;
     // Tekniker sahada gerçekleşen satış fiyatını güncelleyebilir.
     const canChangePrice = true;
     final canCollectPayment = _appSettings.serviceRule(
@@ -484,7 +672,6 @@ class _ServiceExecutionScreenState
                             ServiceRequestType.fault,
                             ServiceRequestType.other,
                           ]
-                          .where((type) => _appSettings.enabledServiceTypes.contains(type.value) || type == _selectedServiceType)
                           .map((type) => DropdownMenuItem(
                                 value: type,
                                 child: Text(type.label),
@@ -513,7 +700,7 @@ class _ServiceExecutionScreenState
                       maxLines: 4,
                       decoration: const InputDecoration(
                         labelText: 'Tamamlama Notu / Yapılan İşlem',
-                        helperText: 'Teknisyen burada yapılan gerçek işlemi yazar.',
+                        helperText: 'İsteğe bağlıdır. Gerekirse yapılan işlemi kısa not olarak yazın.',
                         alignLabelWithHint: true,
                         border: OutlineInputBorder(),
                       ),
@@ -527,9 +714,14 @@ class _ServiceExecutionScreenState
               'Kullanılan Ürünler',
               style: Theme.of(context).textTheme.titleMedium,
             ),
+            const SizedBox(height: 4),
+            const Text(
+              'Araçta olmayan ama merkez stoğunda bulunan ürünü de seçebilirsiniz. Kullanım sonrası araç stoğunuz eksiye düşerek eksik malzeme olarak görünür.',
+              style: TextStyle(fontSize: 12, color: Color(0xFF66788A)),
+            ),
             const SizedBox(height: 8),
             if (_products.isEmpty)
-              const Text('Araç deponuzda kullanılabilir ürün bulunmuyor.')
+              const Text('Kullanılabilir firma ürünü bulunmuyor.')
             else ...[
               Row(
                 children: [
@@ -537,7 +729,7 @@ class _ServiceExecutionScreenState
                     child: DropdownButtonFormField<String>(
                       value: _selectedProductId,
                       decoration: const InputDecoration(
-                        labelText: 'Araçtan ürün seç',
+                        labelText: 'Ürün seç',
                       ),
                       items: _products
                           .where((product) =>
@@ -545,7 +737,10 @@ class _ServiceExecutionScreenState
                           .map(
                             (product) => DropdownMenuItem<String>(
                               value: product['id'].toString(),
-                              child: Text(product['name']?.toString() ?? '-'),
+                              child: Text(
+                                '${product['name']?.toString() ?? '-'}  •  Araç: ${_stockLabel((product['stock_quantity'] as num?)?.toDouble() ?? 0)}  •  Merkez: ${_stockLabel((product['main_stock'] as num?)?.toDouble() ?? 0)}',
+                                overflow: TextOverflow.ellipsis,
+                              ),
                             ),
                           )
                           .toList(growable: false),
@@ -568,112 +763,7 @@ class _ServiceExecutionScreenState
               ..._products
                   .where((product) =>
                       (_quantities[product['id'].toString()] ?? 0) > 0)
-                  .map((product) {
-                final id = product['id'].toString();
-                final stock =
-                    (product['stock_quantity'] as num?)?.toDouble() ?? 0;
-                return Card(
-                  margin: const EdgeInsets.only(bottom: 8),
-                  child: Padding(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 12,
-                      vertical: 8,
-                    ),
-                    child: Row(
-                      children: [
-                        Expanded(
-                          flex: 3,
-                          child: Text(
-                            product['name']?.toString() ?? '-',
-                            maxLines: 2,
-                            overflow: TextOverflow.ellipsis,
-                            style: const TextStyle(fontWeight: FontWeight.w600),
-                          ),
-                        ),
-                        const SizedBox(width: 8),
-                        SizedBox(
-                          width: 82,
-                          child: TextFormField(
-                            key: ValueKey('qty-$id'),
-                            readOnly: !canChangeProducts,
-                            initialValue: (_quantities[id] ?? 1).toStringAsFixed(
-                              (_quantities[id] ?? 1) % 1 == 0 ? 0 : 1,
-                            ),
-                            textAlign: TextAlign.center,
-                            keyboardType: const TextInputType.numberWithOptions(
-                              decimal: true,
-                            ),
-                            decoration: const InputDecoration(
-                              labelText: 'Adet',
-                              isDense: true,
-                            ),
-                            onChanged: canChangeProducts
-                                ? (value) {
-                                    setState(() {
-                                      _quantities[id] = double.tryParse(
-                                            value.replaceAll(',', '.'),
-                                          ) ??
-                                          0;
-                                    });
-                                  }
-                                : null,
-                            validator: (value) {
-                              final quantity = double.tryParse(
-                                    (value ?? '').replaceAll(',', '.'),
-                                  ) ??
-                                  0;
-                              if (quantity <= 0) return 'Adet';
-                              return null;
-                            },
-                          ),
-                        ),
-                        const SizedBox(width: 8),
-                        SizedBox(
-                          width: 120,
-                          child: TextFormField(
-                            key: ValueKey('price-$id'),
-                            readOnly: !canChangePrice,
-                            initialValue: (_unitPrices[id] ?? 0) == 0
-                                ? ''
-                                : (_unitPrices[id] ?? 0).toStringAsFixed(2),
-                            textAlign: TextAlign.center,
-                            keyboardType: const TextInputType.numberWithOptions(
-                              decimal: true,
-                            ),
-                            decoration: const InputDecoration(
-                              labelText: 'Fiyat (₺)',
-                              isDense: true,
-                            ),
-                            onChanged: canChangePrice
-                                ? (value) {
-                                    setState(() {
-                                      _unitPrices[id] = double.tryParse(
-                                            value.replaceAll(',', '.'),
-                                          ) ??
-                                          0;
-                                    });
-                                  }
-                                : null,
-                            validator: (value) {
-                              final price = double.tryParse(
-                                    (value ?? '').replaceAll(',', '.'),
-                                  ) ??
-                                  0;
-                              if (price < 0) return 'Fiyat';
-                              return null;
-                            },
-                          ),
-                        ),
-                        IconButton(
-                          tooltip: 'Ürünü kaldır',
-                          onPressed: canChangeProducts ? () => _removeProduct(id) : null,
-                          icon: const Icon(Icons.delete_outline),
-                        ),
-                      ],
-                    ),
-                  ),
-                );
-              }),
+                  .map((product) => _selectedProductCard(product)),
             ],
             const SizedBox(height: 16),
             TextFormField(
