@@ -1,0 +1,10 @@
+V31 - Yandex 924/1 Sokak adres duzeltmesi
+
+- V30'daki sekreter/tekniker akisi korunur.
+- Yandex rota optimizasyonu ve optimize sonrasi sira senkronizasyonu korunur.
+- Rota noktalarina artik ham adres yerine temizlenmis/canonical adres gonderilir.
+- Ornek: "924/1 sk no:13 k:4 d:4" -> "924/1 Sokak, 13, Bornova, Izmir, Turkiye".
+- Kat/daire bilgileri Yandex rota sorgusundan cikarilir; musteri kartindaki adres degismez.
+- Sokak numarasindaki / karakteri korunur (924/1, 292/21, 1419/1 vb.).
+- Yeni SQL gerekmez.
+- Tek musteri icin Harita butonu da ayni temiz adresi kullanir.

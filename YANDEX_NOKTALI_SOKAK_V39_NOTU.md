@@ -1,0 +1,1 @@
+V39: Yandex adres önerisindeki "1023. Sok." biçiminde sokak numarasından sonra gelen nokta artık eşleştirmeyi bozmaz. Sadece sokak imzası regexi düzeltildi; rota/optimize/koordinat/fallback akışına dokunulmadı.

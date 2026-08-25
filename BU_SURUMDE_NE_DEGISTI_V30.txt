@@ -1,0 +1,30 @@
+MOTUS / ARN ERP - V30
+25.08.2026
+
+Bu sürüm V29 Yandex optimize senkronunu korur ve sekreter -> tekniker servis akışını sadeleştirir.
+
+1) Sekreter servis talebi oluştururken saat seçimi kaldırıldı.
+   - Net Saat / Saat Aralığı / Gün İçinde seçimi sekreter formunda görünmez.
+   - Sekreter gerekiyorsa saat bilgisini "Sekreter Notu" alanına yazar.
+   - Yeni sekreter kayıtlarına [Saat:..] / [Aralık:..] / [Gün içinde] etiketi eklenmez.
+   - Planlanan tarih yine zorunludur.
+
+2) Arıza ve Servis talebinde sekreter ürün seçmez.
+   - Ürün / İşlem ve Adet alanları Arıza / Servis seçildiğinde gizlenir.
+   - Gizli eski ürün seçimi temizlenir; planned product alanları boş kaydedilir.
+   - Planlanan Tutar 0 TL olabilir.
+
+3) Yeni Kurulum ve Filtre Değişimi mevcut davranışı korur.
+   - Ürün seçimi ve adet zorunludur.
+   - Toplam fiyat 0'dan büyük olmalıdır.
+
+4) Tekniker akışı korunur.
+   - Arıza / Servis 0 TL ve ürünsüz açılmış olsa bile tekniker servis ekranında
+     "Kullanılan Ürünler" bölümünden ürün ekleyebilir, adet/fiyat değiştirebilir.
+   - Stok düşme / merkez stoktan kullanma mantığına dokunulmadı.
+
+5) Sekreter notları tekniker tarafında daha görünür yapıldı.
+   - Günlük İşler'de müşteri seçilince sağ panelde "Talebi açan" ve "Sekreter Notu" görünür.
+   - Servise girince üstte ayrıca "Sekreter Bilgisi" kartında aynı not gösterilir.
+
+SQL: Yeni SQL gerekmiyor.

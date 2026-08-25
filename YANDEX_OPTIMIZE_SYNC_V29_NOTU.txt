@@ -1,0 +1,9 @@
+MOTUS / ARN ERP - Yandex Optimize Sira Senkronu V29
+
+- Tekniker Yandex rota ekraninda kendi "Optimize et" butonuna bastiginda uygulama Yandex durak alanlarini 1 saniyede bir izler.
+- Yandex'in optimize ettigi yeni musteri sirasi soldaki "Secili Gun Islerim" listesine ve sag alttaki rota isim listesine aktarilir.
+- Yeni sira technician_save_route_order_v1 ile route_order olarak kaydedilmeye calisilir.
+- Saat / plannedDate optimizasyona dahil EDILMEZ. Yalnizca Yandex'in verdigi durak sirasi esas alinir.
+- "Konum atti" gibi sokak/no icermeyen eski kayitlarda Yandex'in ilce/mahalleye sadeledigi degerler icin benzersiz ilce/mahalle eslestirme fallback'i eklendi.
+- Baslangic noktasi musteri sirasi ile karistirilmaz.
+- Yeni SQL gerektirmez.

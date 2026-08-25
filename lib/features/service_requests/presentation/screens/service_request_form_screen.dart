@@ -276,6 +276,32 @@ class _ServiceRequestFormScreenState
     );
   }
 
+  bool get _isSecretary => widget.role == AppRole.secretary;
+
+  bool _serviceNeedsPlannedProduct(ServiceRequestType type) =>
+      type == ServiceRequestType.newInstallation ||
+      type == ServiceRequestType.filterChange;
+
+  bool get _needsPlannedProduct => _serviceNeedsPlannedProduct(_serviceType);
+
+  void _changeServiceType(ServiceRequestType value) {
+    final previouslyNeededProduct = _needsPlannedProduct;
+    setState(() {
+      _serviceType = value;
+      if (!_serviceNeedsPlannedProduct(value)) {
+        _selectedProductId = null;
+        _selectedProductPrice = 0;
+        _quantityController.text = '1';
+        _priceController.text = '0';
+      } else if (!previouslyNeededProduct) {
+        _selectedProductId = null;
+        _selectedProductPrice = 0;
+        _quantityController.text = '1';
+        _priceController.clear();
+      }
+    });
+  }
+
   Widget _serviceInformationPanel(bool saving) {
     return Container(
       padding: const EdgeInsets.all(20),
@@ -293,57 +319,102 @@ class _ServiceRequestFormScreenState
                 .where((type) => _enabledServiceTypes.contains(type.value) || type == ServiceRequestType.other)
                 .map((type) => DropdownMenuItem(value: type, child: Text(_serviceTypeLabel(type))))
                 .toList(),
-            onChanged: saving ? null : (value) => value == null ? null : setState(() => _serviceType = value),
+            onChanged: saving ? null : (value) => value == null ? null : _changeServiceType(value),
           ),
           const SizedBox(height: 14),
-          DropdownButtonFormField<String>(
-            value: _selectedProductId,
-            decoration: const InputDecoration(labelText: 'Ürün / İşlem *', hintText: 'Planlanan ürünü seçin'),
-            items: _products.map((product) {
-              final id = product['id'].toString();
-              final name = product['name']?.toString() ?? '-';
-              return DropdownMenuItem(value: id, child: Text(name));
-            }).toList(),
-            onChanged: saving
-                ? null
-                : (value) {
-                    Map<String, dynamic>? product;
-                    for (final item in _products) {
-                      if (item['id'].toString() == value) product = item;
-                    }
-                    setState(() {
-                      _selectedProductId = value;
-                      _selectedProductPrice = (product?['sale_price'] as num?)?.toDouble() ?? 0;
-                      if (_selectedProductPrice > 0) _priceController.text = _selectedProductPrice.toStringAsFixed(0);
-                    });
-                  },
-            validator: (value) => value == null ? 'Bir ürün seçin.' : null,
-          ),
-          const SizedBox(height: 14),
-          Row(children: [
-            Expanded(
-              child: TextFormField(
-                controller: _quantityController,
-                enabled: !saving,
-                keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                decoration: const InputDecoration(labelText: 'Adet *'),
-                validator: (value) => (double.tryParse((value ?? '').replaceAll(',', '.')) ?? 0) <= 0 ? 'Geçerli adet girin.' : null,
+          if (_needsPlannedProduct) ...[
+            DropdownButtonFormField<String>(
+              value: _selectedProductId,
+              decoration: const InputDecoration(
+                labelText: 'Ürün / İşlem *',
+                hintText: 'Planlanan ürünü seçin',
               ),
+              items: _products.map((product) {
+                final id = product['id'].toString();
+                final name = product['name']?.toString() ?? '-';
+                return DropdownMenuItem(value: id, child: Text(name));
+              }).toList(),
+              onChanged: saving
+                  ? null
+                  : (value) {
+                      Map<String, dynamic>? product;
+                      for (final item in _products) {
+                        if (item['id'].toString() == value) product = item;
+                      }
+                      setState(() {
+                        _selectedProductId = value;
+                        _selectedProductPrice =
+                            (product?['sale_price'] as num?)?.toDouble() ?? 0;
+                        if (_selectedProductPrice > 0) {
+                          _priceController.text =
+                              _selectedProductPrice.toStringAsFixed(0);
+                        }
+                      });
+                    },
+              validator: (value) =>
+                  _needsPlannedProduct && value == null ? 'Bir ürün seçin.' : null,
             ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: TextFormField(
-                controller: _priceController,
-                enabled: !saving,
-                keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                decoration: const InputDecoration(labelText: 'Toplam Fiyat *', prefixText: '₺ '),
-                validator: (value) {
-                  final price = double.tryParse((value ?? '').trim().replaceAll('.', '').replaceAll(',', '.'));
-                  return price == null || price <= 0 ? 'Geçerli fiyat girin.' : null;
-                },
+            const SizedBox(height: 14),
+            Row(
+              children: [
+                Expanded(
+                  child: TextFormField(
+                    controller: _quantityController,
+                    enabled: !saving,
+                    keyboardType:
+                        const TextInputType.numberWithOptions(decimal: true),
+                    decoration: const InputDecoration(labelText: 'Adet *'),
+                    validator: (value) =>
+                        (double.tryParse((value ?? '').replaceAll(',', '.')) ?? 0) <= 0
+                            ? 'Geçerli adet girin.'
+                            : null,
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: TextFormField(
+                    controller: _priceController,
+                    enabled: !saving,
+                    keyboardType:
+                        const TextInputType.numberWithOptions(decimal: true),
+                    decoration: const InputDecoration(
+                      labelText: 'Toplam Fiyat *',
+                      prefixText: '₺ ',
+                    ),
+                    validator: (value) {
+                      final price = double.tryParse((value ?? '')
+                          .trim()
+                          .replaceAll('.', '')
+                          .replaceAll(',', '.'));
+                      return price == null || price <= 0
+                          ? 'Geçerli fiyat girin.'
+                          : null;
+                    },
+                  ),
+                ),
+              ],
+            ),
+          ] else ...[
+            TextFormField(
+              controller: _priceController,
+              enabled: !saving,
+              keyboardType: const TextInputType.numberWithOptions(decimal: true),
+              decoration: const InputDecoration(
+                labelText: 'Planlanan Tutar',
+                helperText: 'Arıza / Servis talebi 0 TL olarak açılabilir.',
+                prefixText: '₺ ',
               ),
+              validator: (value) {
+                final price = double.tryParse((value ?? '0')
+                    .trim()
+                    .replaceAll('.', '')
+                    .replaceAll(',', '.'));
+                return price == null || price < 0
+                    ? 'Tutar 0 veya daha büyük olmalıdır.'
+                    : null;
+              },
             ),
-          ]),
+          ],
           const SizedBox(height: 14),
           InkWell(
             onTap: saving ? null : _selectPlannedDate,
@@ -360,71 +431,80 @@ class _ServiceRequestFormScreenState
               ]),
             ),
           ),
-          const SizedBox(height: 14),
-          DropdownButtonFormField<String>(
-            value: _appointmentMode,
-            decoration: const InputDecoration(
-              labelText: 'Randevu Zamanı',
-              helperText: 'Gün içinde, net saat veya saat aralığı seçebilirsiniz.',
+          if (!_isSecretary) ...[
+            const SizedBox(height: 14),
+            DropdownButtonFormField<String>(
+              value: _appointmentMode,
+              decoration: const InputDecoration(
+                labelText: 'Randevu Zamanı',
+                helperText:
+                    'Gün içinde, net saat veya saat aralığı seçebilirsiniz.',
+              ),
+              items: const [
+                DropdownMenuItem(value: 'day', child: Text('Gün İçinde')),
+                DropdownMenuItem(value: 'exact', child: Text('Net Saat')),
+                DropdownMenuItem(value: 'range', child: Text('Saat Aralığı')),
+              ],
+              onChanged: saving
+                  ? null
+                  : (value) => setState(() {
+                        _appointmentMode = value ?? 'day';
+                        if (_appointmentMode == 'day') {
+                          _plannedTime = null;
+                          _plannedEndTime = null;
+                        } else if (_appointmentMode == 'exact') {
+                          _plannedEndTime = null;
+                        }
+                      }),
             ),
-            items: const [
-              DropdownMenuItem(value: 'day', child: Text('Gün İçinde')),
-              DropdownMenuItem(value: 'exact', child: Text('Net Saat')),
-              DropdownMenuItem(value: 'range', child: Text('Saat Aralığı')),
+            if (_appointmentMode != 'day') ...[
+              const SizedBox(height: 14),
+              InkWell(
+                onTap: saving ? null : _selectPlannedTime,
+                borderRadius: BorderRadius.circular(14),
+                child: InputDecorator(
+                  decoration: InputDecoration(
+                    labelText: _appointmentMode == 'range'
+                        ? 'Başlangıç Saati'
+                        : 'Randevu Saati',
+                  ),
+                  child: Row(
+                    children: [
+                      const Icon(Icons.access_time_rounded, size: 20),
+                      const SizedBox(width: 8),
+                      Text(
+                        _plannedTime == null
+                            ? 'Saat seçin'
+                            : _plannedTime!.format(context),
+                        style: const TextStyle(fontWeight: FontWeight.w800),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
             ],
-            onChanged: saving
-                ? null
-                : (value) => setState(() {
-                      _appointmentMode = value ?? 'day';
-                      if (_appointmentMode == 'day') {
-                        _plannedTime = null;
-                        _plannedEndTime = null;
-                      } else if (_appointmentMode == 'exact') {
-                        _plannedEndTime = null;
-                      }
-                    }),
-          ),
-          if (_appointmentMode != 'day') ...[
-            const SizedBox(height: 14),
-            InkWell(
-              onTap: saving ? null : _selectPlannedTime,
-              borderRadius: BorderRadius.circular(14),
-              child: InputDecorator(
-                decoration: InputDecoration(
-                  labelText: _appointmentMode == 'range' ? 'Başlangıç Saati' : 'Randevu Saati',
-                ),
-                child: Row(
-                  children: [
-                    const Icon(Icons.access_time_rounded, size: 20),
-                    const SizedBox(width: 8),
-                    Text(
-                      _plannedTime == null ? 'Saat seçin' : _plannedTime!.format(context),
-                      style: const TextStyle(fontWeight: FontWeight.w800),
-                    ),
-                  ],
+            if (_appointmentMode == 'range') ...[
+              const SizedBox(height: 14),
+              InkWell(
+                onTap: saving ? null : _selectPlannedEndTime,
+                borderRadius: BorderRadius.circular(14),
+                child: InputDecorator(
+                  decoration: const InputDecoration(labelText: 'Bitiş Saati'),
+                  child: Row(
+                    children: [
+                      const Icon(Icons.schedule_rounded, size: 20),
+                      const SizedBox(width: 8),
+                      Text(
+                        _plannedEndTime == null
+                            ? 'Bitiş saati seçin'
+                            : _plannedEndTime!.format(context),
+                        style: const TextStyle(fontWeight: FontWeight.w800),
+                      ),
+                    ],
+                  ),
                 ),
               ),
-            ),
-          ],
-          if (_appointmentMode == 'range') ...[
-            const SizedBox(height: 14),
-            InkWell(
-              onTap: saving ? null : _selectPlannedEndTime,
-              borderRadius: BorderRadius.circular(14),
-              child: InputDecorator(
-                decoration: const InputDecoration(labelText: 'Bitiş Saati'),
-                child: Row(
-                  children: [
-                    const Icon(Icons.schedule_rounded, size: 20),
-                    const SizedBox(width: 8),
-                    Text(
-                      _plannedEndTime == null ? 'Bitiş saati seçin' : _plannedEndTime!.format(context),
-                      style: const TextStyle(fontWeight: FontWeight.w800),
-                    ),
-                  ],
-                ),
-              ),
-            ),
+            ],
           ],
           const SizedBox(height: 14),
           TextFormField(
@@ -432,7 +512,12 @@ class _ServiceRequestFormScreenState
             enabled: !saving,
             minLines: 4,
             maxLines: 6,
-            decoration: const InputDecoration(labelText: 'Açıklama / Şikayet', hintText: 'Müşterinin talebini ve yapılacak işlemi yazın.'),
+            decoration: InputDecoration(
+              labelText: _isSecretary ? 'Sekreter Notu' : 'Açıklama / Şikayet',
+              hintText: _isSecretary
+                  ? 'Gerekirse saat bilgisini ve müşteri talebini buraya yazın.'
+                  : 'Müşterinin talebini ve yapılacak işlemi yazın.',
+            ),
           ),
         ],
       ),
@@ -650,6 +735,10 @@ class _ServiceRequestFormScreenState
             orElse: () => ServiceRequestType.other,
           );
         }
+        if (!_serviceNeedsPlannedProduct(_serviceType) &&
+            _priceController.text.trim().isEmpty) {
+          _priceController.text = '0';
+        }
       });
     } catch (_) {
       if (!mounted) return;
@@ -751,13 +840,13 @@ class _ServiceRequestFormScreenState
         .trim()
         .replaceAll('.', '')
         .replaceAll(',', '.');
-    final price = double.parse(normalizedPrice);
+    final price = double.tryParse(normalizedPrice) ?? 0;
 
-    if (_appointmentMode == 'exact' && _plannedTime == null) {
+    if (!_isSecretary && _appointmentMode == 'exact' && _plannedTime == null) {
       _showMessage('Net saat için randevu saatini seçin.');
       return;
     }
-    if (_appointmentMode == 'range') {
+    if (!_isSecretary && _appointmentMode == 'range') {
       if (_plannedTime == null || _plannedEndTime == null) {
         _showMessage('Saat aralığı için başlangıç ve bitiş saatini seçin.');
         return;
@@ -768,20 +857,28 @@ class _ServiceRequestFormScreenState
       }
     }
 
+    final effectiveAppointmentMode = _isSecretary ? 'day' : _appointmentMode;
     final plannedDateTime = _plannedDate == null
         ? null
         : DateTime(
             _plannedDate!.year,
             _plannedDate!.month,
             _plannedDate!.day,
-            _appointmentMode == 'day' ? 0 : (_plannedTime?.hour ?? 0),
-            _appointmentMode == 'day' ? 0 : (_plannedTime?.minute ?? 0),
+            effectiveAppointmentMode == 'day' ? 0 : (_plannedTime?.hour ?? 0),
+            effectiveAppointmentMode == 'day' ? 0 : (_plannedTime?.minute ?? 0),
           );
-    final timeTag = switch (_appointmentMode) {
-      'exact' => '[Saat:${_plannedTime!.hour.toString().padLeft(2, '0')}:${_plannedTime!.minute.toString().padLeft(2, '0')}] ',
-      'range' => '[Aralık:${_plannedTime!.hour.toString().padLeft(2, '0')}:${_plannedTime!.minute.toString().padLeft(2, '0')}-${_plannedEndTime!.hour.toString().padLeft(2, '0')}:${_plannedEndTime!.minute.toString().padLeft(2, '0')}] ',
-      _ => '[Gün içinde] ',
-    };
+    final timeTag = _isSecretary
+        ? ''
+        : switch (effectiveAppointmentMode) {
+            'exact' =>
+              '[Saat:${_plannedTime!.hour.toString().padLeft(2, '0')}:${_plannedTime!.minute.toString().padLeft(2, '0')}] ',
+            'range' =>
+              '[Aralık:${_plannedTime!.hour.toString().padLeft(2, '0')}:${_plannedTime!.minute.toString().padLeft(2, '0')}-${_plannedEndTime!.hour.toString().padLeft(2, '0')}:${_plannedEndTime!.minute.toString().padLeft(2, '0')}] ',
+            _ => '[Gün içinde] ',
+          };
+    final quantity = _needsPlannedProduct
+        ? (double.tryParse(_quantityController.text.replaceAll(',', '.')) ?? 1)
+        : 0.0;
 
     final request = ServiceRequestModel(
       customerId: widget.customerId,
@@ -793,10 +890,10 @@ class _ServiceRequestFormScreenState
       createdBy: user.id,
       createdAt: DateTime.now(),
       updatedAt: DateTime.now(),
-      plannedProductId: _selectedProductId,
-      plannedProductName: _selectedProductName(),
-      plannedQuantity: double.tryParse(_quantityController.text.replaceAll(',', '.')) ?? 1,
-      plannedUnitPrice: price / (double.tryParse(_quantityController.text.replaceAll(',', '.')) ?? 1),
+      plannedProductId: _needsPlannedProduct ? _selectedProductId : null,
+      plannedProductName: _needsPlannedProduct ? _selectedProductName() : '',
+      plannedQuantity: quantity,
+      plannedUnitPrice: _needsPlannedProduct && quantity > 0 ? price / quantity : 0,
     );
 
     final success = await ref
@@ -872,13 +969,17 @@ class _ServiceRequestFormScreenState
 
     final settings = await ref.read(companyAppSettingsProvider.future);
     final appointmentText = switch (_appointmentMode) {
-      'exact' when _plannedTime != null => '${_plannedTime!.hour.toString().padLeft(2, '0')}:${_plannedTime!.minute.toString().padLeft(2, '0')}',
-      'range' when _plannedTime != null && _plannedEndTime != null => '${_plannedTime!.hour.toString().padLeft(2, '0')}:${_plannedTime!.minute.toString().padLeft(2, '0')} - ${_plannedEndTime!.hour.toString().padLeft(2, '0')}:${_plannedEndTime!.minute.toString().padLeft(2, '0')}',
+      'exact' when _plannedTime != null =>
+        '${_plannedTime!.hour.toString().padLeft(2, '0')}:${_plannedTime!.minute.toString().padLeft(2, '0')}',
+      'range' when _plannedTime != null && _plannedEndTime != null =>
+        '${_plannedTime!.hour.toString().padLeft(2, '0')}:${_plannedTime!.minute.toString().padLeft(2, '0')} - ${_plannedEndTime!.hour.toString().padLeft(2, '0')}:${_plannedEndTime!.minute.toString().padLeft(2, '0')}',
       _ => 'gün içinde',
     };
     final dateText = _plannedDate == null
         ? 'belirlenecek tarihte'
-        : '${DateFormat('dd.MM.yyyy', 'tr_TR').format(_plannedDate!)} • $appointmentText';
+        : _isSecretary
+            ? DateFormat('dd.MM.yyyy', 'tr_TR').format(_plannedDate!)
+            : '${DateFormat('dd.MM.yyyy', 'tr_TR').format(_plannedDate!)} • $appointmentText';
     final message = settings.appointmentTemplate
         .replaceAll('{{musteri}}', customerName)
         .replaceAll('{{müşteri}}', customerName)

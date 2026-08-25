@@ -38,16 +38,16 @@ class _TechnicianJobsScreenState extends ConsumerState<TechnicianJobsScreen> {
   String? _startPointLabel;
   double? _startPointLatitude;
   double? _startPointLongitude;
-  final Map<String, ({double lat, double lon})> _jobPointCache = {};
   List<String> _localRouteOrderIds = const <String>[];
   bool _routeBuilt = false;
   bool _optimizing = false;
+  bool _syncingYandexOrder = false;
   Timer? _yandexRouteSyncTimer;
   StreamSubscription<String>? _mapUrlSub;
   String? _yandexStartText;
+  Set<String> _invalidAddressJobIds = <String>{};
+  Map<String, String> _invalidAddressResolvedText = <String, String>{};
 
-  static const String _yandexGeocoderKey =
-      String.fromEnvironment('YANDEX_GEOCODER_API_KEY');
 
   static const _cannotAttendReasons = <String>[
     'Müşteri ulaşılmadı',
@@ -146,6 +146,8 @@ class _TechnicianJobsScreenState extends ConsumerState<TechnicianJobsScreen> {
       _routeBuilt = false;
       _yandexStartText = null;
       _localRouteOrderIds = const <String>[];
+      _invalidAddressJobIds = <String>{};
+      _invalidAddressResolvedText = <String, String>{};
       _future = _load();
     });
   }
@@ -163,6 +165,8 @@ class _TechnicianJobsScreenState extends ConsumerState<TechnicianJobsScreen> {
       _routeBuilt = false;
       _yandexStartText = null;
       _localRouteOrderIds = const <String>[];
+      _invalidAddressJobIds = <String>{};
+      _invalidAddressResolvedText = <String, String>{};
       _future = _load();
     });
   }
@@ -174,6 +178,8 @@ class _TechnicianJobsScreenState extends ConsumerState<TechnicianJobsScreen> {
       _lastMapUrl = null;
       _routeBuilt = false;
       _yandexStartText = null;
+      _invalidAddressJobIds = <String>{};
+      _invalidAddressResolvedText = <String, String>{};
       _future = _load();
     });
   }
@@ -182,13 +188,14 @@ class _TechnicianJobsScreenState extends ConsumerState<TechnicianJobsScreen> {
     await context.push('/technician/customers/${job.customerId}');
     if (!mounted) return;
     // Karttan/düzenlemeden dönünce adres/telefon değişmiş olabilir.
-    _jobPointCache.clear();
     _yandexRouteSyncTimer?.cancel();
     setState(() {
       _lastMapUrl = null;
       _routeBuilt = false;
       _yandexStartText = null;
       _selectedJob = null;
+      _invalidAddressJobIds = <String>{};
+      _invalidAddressResolvedText = <String, String>{};
       _future = _load();
     });
   }
@@ -196,14 +203,15 @@ class _TechnicianJobsScreenState extends ConsumerState<TechnicianJobsScreen> {
   Future<void> _editCustomer(TechnicianJob job) async {
     await context.push('/technician/customers/${job.customerId}/edit');
     if (!mounted) return;
-    // Yanlış adres düzeltildiyse eski geocode'u kesinlikle kullanma.
-    _jobPointCache.clear();
+    // Yanlış adres düzeltildiyse rota yeniden doğrulansın.
     _yandexRouteSyncTimer?.cancel();
     setState(() {
       _lastMapUrl = null;
       _routeBuilt = false;
       _yandexStartText = null;
       _selectedJob = null;
+      _invalidAddressJobIds = <String>{};
+      _invalidAddressResolvedText = <String, String>{};
       _future = _load();
     });
   }
@@ -246,10 +254,12 @@ class _TechnicianJobsScreenState extends ConsumerState<TechnicianJobsScreen> {
 
   String _canonicalJobAddress(TechnicianJob job) {
     var raw = job.address.trim();
-    if (raw.isEmpty) return job.mapQuery.trim();
+    if (raw.isEmpty) return '';
 
-    // Kat / daire bilgileri geocoder icin faydali degil; tam tersine
-    // "11B" gibi ilgisiz bir konuma eslesmeye sebep olabiliyor.
+    // Yandex'e müşterinin sokak/cadde metnini DEĞİŞTİRMEDEN gönderiyoruz.
+    // Sadece rota için anlam taşımayan kat/daire bilgisini çıkarıyoruz.
+    // Örnek: "7467/1 sok No:1 k:2 d:4" ->
+    // "7467/1 sok No:1, Karşıyaka, İzmir, Türkiye".
     raw = raw
         .replaceAll(
           RegExp(
@@ -261,42 +271,13 @@ class _TechnicianJobsScreenState extends ConsumerState<TechnicianJobsScreen> {
         .replaceAll(RegExp(r'\s+'), ' ')
         .trim();
 
-    final streetMatch = RegExp(
-      r'(\d+(?:/\d+)?)\s*(?:sk\.?|sok\.?|sokak)\b',
-      caseSensitive: false,
-    ).firstMatch(raw);
-    final implicitStreetMatch = streetMatch == null
-        ? RegExp(
-            r'^\s*(\d+(?:/\d+)?)\s+(?=no\b)',
-            caseSensitive: false,
-          ).firstMatch(raw)
-        : null;
-    final numberMatch = RegExp(
-      r'\bno\s*[:.]?\s*(\d+[a-z]?(?:/\d+[a-z]?)?)',
-      caseSensitive: false,
-    ).firstMatch(raw);
-
-    String core;
-    final streetNo = streetMatch?.group(1) ?? implicitStreetMatch?.group(1);
-    if (streetNo != null && streetNo.trim().isNotEmpty) {
-      core = '$streetNo Sokak';
-      final houseNo = numberMatch?.group(1);
-      if (houseNo != null && houseNo.trim().isNotEmpty) {
-        core += ' No:$houseNo';
-      }
-    } else {
-      core = raw;
-    }
-
     final parts = <String>[
-      core,
-      job.neighborhood.trim(),
+      raw,
       job.district.trim(),
       job.city.trim(),
       'Türkiye',
     ].where((value) => value.isNotEmpty).toList(growable: false);
 
-    // Ayni il/ilce adres metninin icinde zaten varsa tekrar yazmayalim.
     final unique = <String>[];
     final seen = <String>{};
     for (final part in parts) {
@@ -309,25 +290,173 @@ class _TechnicianJobsScreenState extends ConsumerState<TechnicianJobsScreen> {
   }
 
   String _nativeRoutePointForJob(TechnicianJob job) {
-    // Yandex'in kendi rota ekranina mumkun olan en acik adresi veriyoruz.
-    // Eski otomatik koordinat/pin kullanilmiyor; mahalle-ilce-il bilgisi de
-    // sorguda kalarak ayni sokak adinin baska sehre gitmesi engelleniyor.
-    final rawParts = <String>[
-      job.address.trim(),
-      job.neighborhood.trim(),
-      job.district.trim(),
-      job.city.trim(),
-      'Türkiye',
-    ].where((e) => e.isNotEmpty).toList(growable: false);
-    final result = <String>[];
-    final seen = <String>{};
-    for (final part in rawParts) {
-      final key = _foldAddressText(part);
-      if (key.isEmpty || seen.contains(key)) continue;
-      seen.add(key);
-      result.add(part);
+    // Koordinat, yaklaşık nokta, ilçe merkezi veya başka sokak fallback'i YOK.
+    // Veritabanındaki açık adres neyse Yandex'e o gider.
+    return _canonicalJobAddress(job);
+  }
+
+  bool _routeValueMatchesJob(TechnicianJob job, String yandexValue) {
+    final expectedSignature = _jobRouteSignature(job);
+    if (expectedSignature.isNotEmpty) {
+      // Sayısal sokaklarda hem sokak hem kapı numarası birebir uyuşmalı.
+      // 7467/1 -> 1731 veya 542 No:44 -> yalnızca mahalle gibi sonuçlar
+      // kesinlikle kabul edilmez.
+      return _yandexValueSignature(yandexValue) == expectedSignature;
     }
-    return result.join(', ');
+
+    final expected = _foldAddressText(job.address);
+    final actual = _foldAddressText(yandexValue);
+    if (expected.isEmpty || actual.isEmpty) return false;
+
+    final houseNo = RegExp(r'\bno\s*(\d+[a-z]?)\b')
+        .firstMatch(expected)
+        ?.group(1);
+    if (houseNo != null && !actual.split(' ').contains(houseNo)) {
+      return false;
+    }
+
+    const ignored = <String>{
+      'mah', 'mahalle', 'mahallesi', 'sok', 'sokak', 'sk', 'cad', 'cadde',
+      'caddesi', 'cd', 'bulvar', 'bulvari', 'blv', 'no', 'kat', 'daire',
+      'apartmani', 'apartman', 'apt', 'blok', 'turkiye',
+    };
+    final words = expected
+        .split(' ')
+        .where((w) => w.length >= 4 && !ignored.contains(w) && !RegExp(r'^\d+$').hasMatch(w))
+        .toList(growable: false);
+    if (words.isEmpty) return false;
+
+    // İsme dayalı cadde/sokaklarda en az iki ayırt edici kelime varsa ikisini,
+    // tek kelime varsa o kelimeyi Yandex sonucunda görmek zorundayız.
+    final requiredCount = words.length >= 2 ? 2 : 1;
+    var matched = 0;
+    for (final word in words) {
+      if (actual.split(' ').contains(word)) matched++;
+    }
+    return matched >= requiredCount;
+  }
+
+  Future<List<String>?> _waitForResolvedRouteValues({
+    required int jobCount,
+    required String startText,
+  }) async {
+    // Yandex önce gönderdiğimiz ham metni inputlara koyup birkaç yüz ms sonra
+    // kendi bulduğu adresle değiştirebiliyor. Bu yüzden ilk görünen değeri
+    // kabul etmiyoruz; alanların en az 3 tur sabit kalmasını bekliyoruz.
+    List<String>? lastValues;
+    var stableRounds = 0;
+
+    for (var attempt = 0; attempt < 22; attempt++) {
+      await Future<void>.delayed(const Duration(milliseconds: 350));
+      final inputs = await _readYandexInputs();
+      if (inputs.isEmpty) continue;
+
+      final values = <String>[];
+      var skippedStartByMetadata = false;
+      for (final input in inputs) {
+        final value = (input['value'] ?? '').trim();
+        if (value.isEmpty) continue;
+        final meta = _foldAddressText(
+          '${input['placeholder'] ?? ''} ${input['aria'] ?? ''}',
+        );
+        if (!skippedStartByMetadata && meta.contains('nereden')) {
+          skippedStartByMetadata = true;
+          continue;
+        }
+        values.add(value);
+      }
+
+      if (!skippedStartByMetadata) {
+        final foldedStart = _foldAddressText(startText);
+        final startIndex = values.indexWhere(
+          (value) => _foldAddressText(value) == foldedStart,
+        );
+        if (startIndex >= 0) {
+          values.removeAt(startIndex);
+        } else if (values.length == jobCount + 1) {
+          values.removeAt(0);
+        }
+      }
+
+      if (values.length < jobCount) {
+        stableRounds = 0;
+        lastValues = null;
+        continue;
+      }
+
+      final current = values.take(jobCount).toList(growable: false);
+      final sameAsLast = lastValues != null &&
+          lastValues!.length == current.length &&
+          List.generate(current.length, (i) => lastValues![i] == current[i])
+              .every((e) => e);
+      if (sameAsLast) {
+        stableRounds++;
+      } else {
+        lastValues = current;
+        stableRounds = 1;
+      }
+
+      // En az ~1.7 sn bekle ve sonrasında 3 ardışık okumada aynı sonucu gör.
+      if (attempt >= 4 && stableRounds >= 3) return current;
+    }
+    return null;
+  }
+
+  Future<List<TechnicianJob>?> _validateResolvedAddresses(
+    List<TechnicianJob> jobs,
+    String startText,
+  ) async {
+    final values = await _waitForResolvedRouteValues(
+      jobCount: jobs.length,
+      startText: startText,
+    );
+    if (values == null) return null;
+
+    final invalid = <TechnicianJob>[];
+    final resolvedText = <String, String>{};
+    for (var i = 0; i < jobs.length; i++) {
+      final job = jobs[i];
+      final value = values[i];
+      if (!_routeValueMatchesJob(job, value)) {
+        invalid.add(job);
+        resolvedText[job.id] = value;
+      }
+    }
+
+    if (mounted) {
+      setState(() {
+        _invalidAddressJobIds = invalid.map((e) => e.id).toSet();
+        _invalidAddressResolvedText = resolvedText;
+      });
+    }
+    return invalid;
+  }
+
+  String _commonRouteCity(List<TechnicianJob> jobs) {
+    final cities = jobs
+        .map((job) => job.city.trim())
+        .where((city) => city.isNotEmpty)
+        .toSet();
+    return cities.length == 1 ? cities.first : '';
+  }
+
+  String _startPointWithCityContext(
+    String start,
+    List<TechnicianJob> jobs,
+  ) {
+    final raw = start.trim();
+    if (raw.isEmpty) return raw;
+
+    final city = _commonRouteCity(jobs);
+    if (city.isEmpty) return raw;
+
+    final foldedStart = _foldAddressText(raw);
+    final foldedCity = _foldAddressText(city);
+    if (foldedCity.isNotEmpty && foldedStart.contains(foldedCity)) {
+      return raw;
+    }
+
+    return '$raw, $city, Türkiye';
   }
 
   String _nativeRoutePlannerUrl({String rtext = ''}) {
@@ -340,6 +469,14 @@ class _TechnicianJobsScreenState extends ConsumerState<TechnicianJobsScreen> {
         'rtt': 'auto',
       },
     ).toString();
+  }
+
+  String _routeUrl(List<TechnicianJob> jobs) {
+    final points = jobs
+        .map(_nativeRoutePointForJob)
+        .where((value) => value.trim().isNotEmpty)
+        .toList(growable: false);
+    return _nativeRoutePlannerUrl(rtext: points.join('~'));
   }
 
   Future<void> _openNativeYandexStartPlanner({bool showHint = true}) async {
@@ -418,29 +555,59 @@ class _TechnicianJobsScreenState extends ConsumerState<TechnicianJobsScreen> {
   }
 
   String _jobRouteSignature(TechnicianJob job) {
-    final raw = _foldAddressText(job.address);
-    final street = RegExp(r'(^|\s)(\d{2,5}(?:\s+\d+)?)\s*(?:sk|sok|sokak)?\b')
-        .firstMatch(raw)
+    final raw = job.address.toLowerCase();
+    final streetMatch = RegExp(
+      r'(^|[^0-9])(\d{2,5}(?:\s*/\s*\d+)?)\s*\.?\s*(?:sk|sok|sokak)\b',
+      caseSensitive: false,
+    ).firstMatch(raw);
+    final street = streetMatch
         ?.group(2)
-        ?.replaceAll(' ', '/');
-    final explicitNo = RegExp(r'\bno\s*(\d+[a-z]?)\b')
-        .firstMatch(raw)
-        ?.group(1);
+        ?.replaceAll(RegExp(r'\s+'), '')
+        .replaceAll(RegExp(r'/+'), '/');
+    final explicitNo = RegExp(
+      r'\bno\s*[:.]?\s*(\d+[a-z]?)\b',
+      caseSensitive: false,
+    ).firstMatch(raw)?.group(1);
     if (street == null || street.isEmpty) return '';
     return '$street#${explicitNo ?? ''}';
   }
 
   String _yandexValueSignature(String value) {
-    final raw = _foldAddressText(value);
-    final street = RegExp(r'(^|\s)(\d{2,5}(?:\s+\d+)?)\s*(?:sk|sok|sokak)\b')
-        .firstMatch(raw)
+    final raw = value.toLowerCase();
+    final streetMatch = RegExp(
+      r'(^|[^0-9])(\d{2,5}(?:\s*/\s*\d+)?)\s*\.?\s*(?:sk|sok|sokak)\b',
+      caseSensitive: false,
+    ).firstMatch(raw);
+    final street = streetMatch
         ?.group(2)
-        ?.replaceAll(' ', '/');
-    if (street == null || street.isEmpty) return '';
-    final afterStreet = RegExp(
-      r'\b(?:sk|sok|sokak)\b[^0-9]{0,8}(\d+[a-z]?)\b',
+        ?.replaceAll(RegExp(r'\s+'), '')
+        .replaceAll(RegExp(r'/+'), '/');
+    if (streetMatch == null || street == null || street.isEmpty) return '';
+
+    // Yandex aynı doğru adresi iki biçimde gösterebiliyor:
+    //   "924/1 Sok., 13"  veya  "13, 924/1 Sok."
+    // Sokak numarasını slash'ı KORUYARAK okuyoruz; böylece
+    // "44, 542 Sok." içindeki 44 kapı numarası yanlışlıkla sokağın
+    // parçası sayılmıyor.
+    final explicitNo = RegExp(
+      r'\bno\s*[:.]?\s*(\d+[a-z]?)\b',
+      caseSensitive: false,
     ).firstMatch(raw)?.group(1);
-    return '$street#${afterStreet ?? ''}';
+
+    final afterText = raw.substring(streetMatch.end);
+    final afterStreet = RegExp(
+      r'^[\s,.;:-]*(\d+[a-z]?)\b',
+      caseSensitive: false,
+    ).firstMatch(afterText)?.group(1);
+
+    final beforeText = raw.substring(0, streetMatch.start).trimRight();
+    final beforeStreet = RegExp(
+      r'(\d+[a-z]?)\s*[,.;:-]*\s*$',
+      caseSensitive: false,
+    ).firstMatch(beforeText)?.group(1);
+
+    final houseNo = explicitNo ?? afterStreet ?? beforeStreet;
+    return '$street#${houseNo ?? ''}';
   }
 
   Future<List<String>> _readYandexRtextValues() async {
@@ -464,70 +631,107 @@ class _TechnicianJobsScreenState extends ConsumerState<TechnicianJobsScreen> {
   }
 
   Future<void> _syncOrderFromYandexPlanner(List<TechnicianJob> jobs) async {
-    if (!_routeBuilt || jobs.length < 2 || !mounted) return;
-    final inputs = await _readYandexInputs();
-    if (inputs.isEmpty) return;
-
-    final bySignature = <String, TechnicianJob>{};
-    final duplicateSignatures = <String>{};
-    for (final job in jobs) {
-      final signature = _jobRouteSignature(job);
-      if (signature.isEmpty) continue;
-      if (bySignature.containsKey(signature)) duplicateSignatures.add(signature);
-      bySignature[signature] = job;
-    }
-    for (final key in duplicateSignatures) {
-      bySignature.remove(key);
+    if (!_routeBuilt || jobs.length < 2 || !mounted || _syncingYandexOrder) {
+      return;
     }
 
-    final candidateValues = <String>[
-      ...inputs.map((e) => (e['value'] ?? '').trim()),
-      ...await _readYandexRtextValues(),
-    ].where((e) => e.isNotEmpty).toList(growable: false);
-
-    final ordered = <TechnicianJob>[];
-    for (final value in candidateValues) {
-      final signature = _yandexValueSignature(value);
-      final job = bySignature[signature];
-      if (job != null && !ordered.any((e) => e.id == job.id)) {
-        ordered.add(job);
-      }
-    }
-    if (ordered.length != jobs.length) return;
-
-    final ids = ordered.map((e) => e.id).toList(growable: false);
-    final unchanged = _localRouteOrderIds.length == ids.length &&
-        List.generate(ids.length, (i) => _localRouteOrderIds[i] == ids[i])
-            .every((e) => e);
-    if (unchanged) return;
-
+    _syncingYandexOrder = true;
     try {
-      await ref
-          .read(serviceExecutionRepositoryProvider)
-          .saveTechnicianRouteOrder(ids);
-    } catch (_) {
-      // Kalici kayit basarisiz olsa bile ekrandaki sira Yandex ile esitlensin.
-    }
-    if (!mounted) return;
-    setState(() {
-      _localRouteOrderIds = ids;
-      final selectedId = _selectedJob?.id;
-      if (selectedId != null) {
-        for (final item in ordered) {
-          if (item.id == selectedId) {
-            _selectedJob = item;
-            break;
+      final inputs = await _readYandexInputs();
+      if (inputs.isEmpty) return;
+
+      // Yandex optimize işleminden sonra rota alanlarının ekrandaki sırası
+      // değişiyor. Burada SAAT / plannedDate kullanılmaz; yalnızca Yandex'in
+      // gösterdiği durak sırası uygulamaya aktarılır.
+      final inputValues = inputs
+          .map((e) => (e['value'] ?? '').trim())
+          .where((e) => e.isNotEmpty)
+          .toList(growable: true);
+
+      // İlk dolu rota alanı başlangıç noktasıdır. Başlangıcı müşteriyle
+      // karıştırmamak için listeden yalnızca ilk eşleşmesini çıkar.
+      final startText = (await _readYandexStartText())?.trim() ?? '';
+      if (startText.isNotEmpty) {
+        final foldedStart = _foldAddressText(startText);
+        final startIndex = inputValues.indexWhere(
+          (value) => _foldAddressText(value) == foldedStart,
+        );
+        if (startIndex >= 0) inputValues.removeAt(startIndex);
+      }
+
+      // Önce ekrandaki gerçek (optimize edilmiş) alanları kullan. rtext sadece
+      // Yandex bazı alanları input olarak sunmazsa yedek kaynak olsun.
+      final candidateValues = <String>[
+        ...inputValues,
+        ...await _readYandexRtextValues(),
+      ];
+
+      TechnicianJob? strictAddressMatch(
+        String value,
+        Set<String> usedIds,
+      ) {
+        final matches = jobs.where((job) {
+          return !usedIds.contains(job.id) && _routeValueMatchesJob(job, value);
+        }).toList(growable: false);
+        return matches.length == 1 ? matches.first : null;
+      }
+
+      final ordered = <TechnicianJob>[];
+      final usedIds = <String>{};
+      for (final value in candidateValues) {
+        final job = strictAddressMatch(value, usedIds);
+        if (job == null) continue;
+        ordered.add(job);
+        usedIds.add(job.id);
+        if (ordered.length == jobs.length) break;
+      }
+
+      if (ordered.length != jobs.length) return;
+
+      final ids = ordered.map((e) => e.id).toList(growable: false);
+      final unchanged = _localRouteOrderIds.length == ids.length &&
+          List.generate(ids.length, (i) => _localRouteOrderIds[i] == ids[i])
+              .every((e) => e);
+      if (unchanged) return;
+
+      try {
+        await ref
+            .read(serviceExecutionRepositoryProvider)
+            .saveTechnicianRouteOrder(ids);
+      } catch (_) {
+        // Kalıcı kayıt başarısız olsa bile ekrandaki sıra Yandex ile eşitlensin.
+      }
+      if (!mounted) return;
+
+      setState(() {
+        _localRouteOrderIds = ids;
+        final selectedId = _selectedJob?.id;
+        if (selectedId != null) {
+          for (final item in ordered) {
+            if (item.id == selectedId) {
+              _selectedJob = item;
+              break;
+            }
           }
         }
-      }
-      _future = _load();
-    });
+        _future = _load();
+      });
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          duration: Duration(seconds: 2),
+          content: Text('Yandex optimize sırası uygulamaya aktarıldı.'),
+        ),
+      );
+    } finally {
+      _syncingYandexOrder = false;
+    }
   }
 
   void _startYandexOrderSync(List<TechnicianJob> jobs) {
     _yandexRouteSyncTimer?.cancel();
     _yandexRouteSyncTimer = Timer.periodic(
-      const Duration(seconds: 2),
+      const Duration(seconds: 1),
       (_) => _syncOrderFromYandexPlanner(jobs),
     );
   }
@@ -553,6 +757,272 @@ class _TechnicianJobsScreenState extends ConsumerState<TechnicianJobsScreen> {
     }
   }
 
+  Future<List<String>> _readYandexRouteInputValues() async {
+    if (!_mapReady || !Platform.isWindows) return const [];
+    try {
+      final value = await _mapController.executeScript(r'''
+(() => {
+  const fold = (v) => (v || '')
+    .toLocaleLowerCase('tr-TR')
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .replace(/ı/g, 'i').replace(/ş/g, 's').replace(/ğ/g, 'g')
+    .replace(/ü/g, 'u').replace(/ö/g, 'o').replace(/ç/g, 'c');
+  const visible = (e) => {
+    const r = e.getBoundingClientRect();
+    const st = getComputedStyle(e);
+    return r.width > 2 && r.height > 2 && st.display !== 'none' && st.visibility !== 'hidden';
+  };
+  return Array.from(document.querySelectorAll('input'))
+    .filter(visible)
+    .filter((e) => {
+      const meta = fold(`${e.getAttribute('placeholder') || ''} ${e.getAttribute('aria-label') || ''}`);
+      if (meta.includes('rota uzerinde ara')) return false;
+      if (meta.includes('arama ve yer secimi')) return false;
+      if (meta.includes('haritada ara')) return false;
+      return true;
+    })
+    .map((e) => (e.value || '').trim());
+})()
+''');
+      dynamic decoded = value;
+      if (decoded is String) {
+        try {
+          decoded = jsonDecode(decoded);
+        } catch (_) {}
+      }
+      if (decoded is List) {
+        return decoded.map((e) => e?.toString() ?? '').toList(growable: false);
+      }
+    } catch (_) {}
+    return const [];
+  }
+
+  Future<bool> _clickYandexAddRoutePoint() async {
+    if (!_mapReady || !Platform.isWindows) return false;
+    try {
+      final result = await _mapController.executeScript(r'''
+(() => {
+  const visible = (e) => {
+    const r = e.getBoundingClientRect();
+    const st = getComputedStyle(e);
+    return r.width > 2 && r.height > 2 && st.display !== 'none' && st.visibility !== 'hidden';
+  };
+  const nodes = Array.from(document.querySelectorAll('button, a, [role="button"], div, span'));
+  const target = nodes
+    .filter(visible)
+    .filter((e) => (e.textContent || '').replace(/\s+/g, ' ').trim().toLocaleLowerCase('tr-TR') === 'ekle')
+    .sort((a, b) => (a.textContent || '').length - (b.textContent || '').length)[0];
+  if (!target) return false;
+  target.click();
+  return true;
+})()
+''');
+      return result == true || result?.toString() == 'true';
+    } catch (_) {
+      return false;
+    }
+  }
+
+  Future<bool> _ensureYandexRouteInput(int index) async {
+    for (var attempt = 0; attempt < 10; attempt++) {
+      final values = await _readYandexRouteInputValues();
+      if (values.length > index) return true;
+      await _clickYandexAddRoutePoint();
+      await Future<void>.delayed(const Duration(milliseconds: 300));
+    }
+    return false;
+  }
+
+  Future<bool> _fillYandexRouteInput(int index, String text) async {
+    if (!_mapReady || !Platform.isWindows) return false;
+    if (!await _ensureYandexRouteInput(index)) return false;
+    final encoded = jsonEncode(text);
+    try {
+      // Önce alanı normal kullanıcı tıklamış gibi aktif et. Yandex bazı
+      // sürümlerde bu tıklamadan sonra rota arama katmanını yeniden çiziyor.
+      final activated = await _mapController.executeScript('''
+(() => {
+  const fold = (v) => (v || '').toLocaleLowerCase('tr-TR');
+  const visible = (e) => {
+    const r = e.getBoundingClientRect();
+    const st = getComputedStyle(e);
+    return r.width > 2 && r.height > 2 && st.display !== 'none' && st.visibility !== 'hidden';
+  };
+  const inputs = Array.from(document.querySelectorAll('input')).filter(visible).filter((e) => {
+    const meta = fold(`\${e.getAttribute('placeholder') || ''} \${e.getAttribute('aria-label') || ''}`);
+    return !meta.includes('rota üzerinde ara') && !meta.includes('arama ve yer seçimi') && !meta.includes('haritada ara');
+  });
+  const input = inputs[$index];
+  if (!input) return false;
+  input.click();
+  input.focus();
+  return true;
+})()
+''');
+      if (!(activated == true || activated?.toString() == 'true')) return false;
+      await Future<void>.delayed(const Duration(milliseconds: 220));
+
+      // Tıklama sonrası DOM değişebileceği için input'u tekrar bulup yazıyoruz.
+      final result = await _mapController.executeScript('''
+(() => {
+  const fold = (v) => (v || '').toLocaleLowerCase('tr-TR');
+  const visible = (e) => {
+    const r = e.getBoundingClientRect();
+    const st = getComputedStyle(e);
+    return r.width > 2 && r.height > 2 && st.display !== 'none' && st.visibility !== 'hidden';
+  };
+  const inputs = Array.from(document.querySelectorAll('input')).filter(visible).filter((e) => {
+    const meta = fold(`\${e.getAttribute('placeholder') || ''} \${e.getAttribute('aria-label') || ''}`);
+    return !meta.includes('rota üzerinde ara') && !meta.includes('arama ve yer seçimi') && !meta.includes('haritada ara');
+  });
+  const input = inputs[$index];
+  if (!input) return false;
+  input.focus();
+  try { input.select(); } catch (_) {}
+  const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+  if (setter) setter.call(input, $encoded); else input.value = $encoded;
+  input.dispatchEvent(new InputEvent('input', {bubbles:true, inputType:'insertText', data:$encoded}));
+  input.dispatchEvent(new Event('change', {bubbles:true}));
+  return true;
+})()
+''');
+      return result == true || result?.toString() == 'true';
+    } catch (_) {
+      return false;
+    }
+  }
+
+  Future<List<String>> _readYandexSuggestionCandidates() async {
+    if (!_mapReady || !Platform.isWindows) return const [];
+    try {
+      final value = await _mapController.executeScript(r'''
+(() => {
+  const visible = (e) => {
+    const r = e.getBoundingClientRect();
+    const st = getComputedStyle(e);
+    return r.width > 2 && r.height > 2 && st.display !== 'none' && st.visibility !== 'hidden';
+  };
+  const seen = new Set();
+  const nodes = [];
+  const add = (e) => {
+    if (!e || !visible(e)) return;
+    const text = (e.innerText || e.textContent || '').replace(/\s+/g, ' ').trim();
+    if (text.length < 4 || text.length > 320) return;
+    if (seen.has(text)) return;
+    seen.add(text);
+    nodes.push(e);
+  };
+
+  document.querySelectorAll(
+    '[role="option"], [class*="suggest-item"], [class*="suggest__item"], [class*="search-suggest"], li[class*="suggest"]'
+  ).forEach(add);
+
+  const roots = Array.from(document.querySelectorAll('[role="listbox"], [class*="suggest"], [class*="popup"]')).filter(visible);
+  roots.forEach((root) => Array.from(root.children || []).forEach(add));
+
+  // Yandex sınıf adlarını değiştirse bile öneriler sol arama panelinde görünür.
+  // Sol taraftaki küçük metin bloklarını da aday havuzuna alıyoruz; Dart tarafı
+  // sokak + kapı + ilçe + il tam eşleşmesi yapacağı için yanlış UI öğesi seçilmez.
+  const leftLimit = Math.min(620, window.innerWidth * 0.48);
+  Array.from(document.querySelectorAll('div, li, a, button'))
+    .filter(visible)
+    .filter((e) => {
+      const r = e.getBoundingClientRect();
+      return r.left >= 0 && r.left < leftLimit && r.top >= 0 && r.top < window.innerHeight * 0.85;
+    })
+    .forEach(add);
+
+  nodes.sort((a, b) => {
+    const at = (a.innerText || a.textContent || '').trim().length;
+    const bt = (b.innerText || b.textContent || '').trim().length;
+    return at - bt;
+  });
+  window.__motusYandexSuggestionNodes = nodes;
+  return nodes.map((e) => (e.innerText || e.textContent || '').replace(/\s+/g, ' ').trim());
+})()
+''');
+      dynamic decoded = value;
+      if (decoded is String) {
+        try {
+          decoded = jsonDecode(decoded);
+        } catch (_) {}
+      }
+      if (decoded is List) {
+        return decoded.map((e) => e?.toString() ?? '').toList(growable: false);
+      }
+    } catch (_) {}
+    return const [];
+  }
+
+  Future<bool> _clickYandexSuggestionCandidate(int index) async {
+    if (!_mapReady || !Platform.isWindows) return false;
+    try {
+      final result = await _mapController.executeScript('''
+(() => {
+  const nodes = window.__motusYandexSuggestionNodes || [];
+  const node = nodes[$index];
+  if (!node || !document.contains(node)) return false;
+  try { node.scrollIntoView({block:'nearest'}); } catch (_) {}
+  node.dispatchEvent(new MouseEvent('mousedown', {bubbles:true, cancelable:true, view:window}));
+  node.dispatchEvent(new MouseEvent('mouseup', {bubbles:true, cancelable:true, view:window}));
+  node.click();
+  return true;
+})()
+''');
+      return result == true || result?.toString() == 'true';
+    } catch (_) {
+      return false;
+    }
+  }
+
+  bool _suggestionTextMatchesJob(TechnicianJob job, String value) {
+    if (!_routeValueMatchesJob(job, value)) return false;
+    final actual = _foldAddressText(value);
+    final city = _foldAddressText(job.city);
+    final district = _foldAddressText(job.district);
+    if (city.isNotEmpty && !actual.contains(city)) return false;
+    if (district.isNotEmpty && !actual.contains(district)) return false;
+    return true;
+  }
+
+  Future<String?> _addJobFromYandexSuggestions(
+    TechnicianJob job,
+    int routeInputIndex,
+  ) async {
+    final query = _nativeRoutePointForJob(job).trim();
+    if (query.isEmpty) return null;
+
+    for (var fillAttempt = 0; fillAttempt < 2; fillAttempt++) {
+      if (!await _fillYandexRouteInput(routeInputIndex, query)) return null;
+
+      for (var attempt = 0; attempt < 20; attempt++) {
+        await Future<void>.delayed(const Duration(milliseconds: 300));
+        final candidates = await _readYandexSuggestionCandidates();
+        if (candidates.isEmpty) continue;
+
+        for (var i = 0; i < candidates.length; i++) {
+          final candidate = candidates[i];
+          if (!_suggestionTextMatchesJob(job, candidate)) continue;
+          if (!await _clickYandexSuggestionCandidate(i)) continue;
+
+          // V38: Yandex doğru öneri seçildikten sonra bazı duraklarda rota
+          // gerçekten oluşmasına rağmen input alanında kullanıcının yazdığı ham
+          // sorguyu bırakabiliyor (özellikle son durakta). V37 bu input metnini
+          // ikinci kez doğrulamaya çalıştığı için, haritada oluşmuş doğru durağı
+          // yanlışlıkla "Adres Hatalı" sayıyordu.
+          //
+          // Buraya gelmeden önce candidate zaten sokak + kapı no + ilçe + il
+          // olarak _suggestionTextMatchesJob ile kesin eşleşmiştir. Yandex'in
+          // kendi önerisine başarılı tıklama, bu akışta adres doğrulamasıdır.
+          // Koordinat/fallback/tahmin kullanılmaz.
+          await Future<void>.delayed(const Duration(milliseconds: 850));
+          return candidate.trim();
+        }
+      }
+    }
+    return null;
+  }
+
   Future<void> _buildRouteWithNativeYandex(List<TechnicianJob> jobs) async {
     if (jobs.isEmpty || _optimizing) return;
     if (!_mapReady || !Platform.isWindows) {
@@ -560,7 +1030,11 @@ class _TechnicianJobsScreenState extends ConsumerState<TechnicianJobsScreen> {
       return;
     }
 
-    setState(() => _optimizing = true);
+    setState(() {
+      _optimizing = true;
+      _invalidAddressJobIds = <String>{};
+      _invalidAddressResolvedText = <String, String>{};
+    });
     try {
       final start = (await _readYandexStartText())?.trim();
       if (start == null || start.isEmpty) {
@@ -568,9 +1042,9 @@ class _TechnicianJobsScreenState extends ConsumerState<TechnicianJobsScreen> {
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(
-              duration: Duration(seconds: 7),
+              duration: Duration(seconds: 6),
               content: Text(
-                'Once Yandex’te “Nereden” alanina baslangic adresini yazin ve cikan listeden secin. Haritaya tiklamaniz gerekmiyor.',
+                'Once Yandex’te baslangic noktasini secin. Sonra Rotayi Olustur’a basin.',
               ),
             ),
           );
@@ -579,37 +1053,103 @@ class _TechnicianJobsScreenState extends ConsumerState<TechnicianJobsScreen> {
       }
 
       _yandexStartText = start;
-      final routeJobs = List<TechnicianJob>.from(jobs);
-      if (_localRouteOrderIds.isNotEmpty) {
-        routeJobs.sort((a, b) {
-          final ai = _localRouteOrderIds.indexOf(a.id);
-          final bi = _localRouteOrderIds.indexOf(b.id);
-          return (ai < 0 ? 9999 : ai).compareTo(bi < 0 ? 9999 : bi);
-        });
+      final startForRoute = _startPointWithCityContext(start, jobs);
+
+      final missingAddressJobs = jobs
+          .where((job) => _nativeRoutePointForJob(job).trim().isEmpty)
+          .toList(growable: false);
+      if (missingAddressJobs.isNotEmpty) {
+        if (mounted) {
+          setState(() {
+            _invalidAddressJobIds = missingAddressJobs.map((e) => e.id).toSet();
+            _invalidAddressResolvedText = <String, String>{};
+            _selectedJob = missingAddressJobs.first;
+          });
+          final names = missingAddressJobs.map((e) => e.customerName).join(', ');
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              duration: const Duration(seconds: 8),
+              content: Text(
+                'Adres eksik: $names. Müşteriyi arayıp adresi düzeltmeden rota oluşturulamaz.',
+              ),
+            ),
+          );
+        }
+        return;
       }
 
-      final points = <String>[
-        start,
-        ...routeJobs.map(_nativeRoutePointForJob).where((e) => e.isNotEmpty),
-      ];
-      final url = _nativeRoutePlannerUrl(rtext: points.join('~'));
+      // V36: müşterileri rtext ile topluca Yandex'e bırakmıyoruz. Önce yalnızca
+      // başlangıcı açıyoruz; sonra her müşterinin yazılı adresini Yandex rota
+      // alanına TEK TEK yazıp Yandex'in kendi önerilerinden sokak + kapı +
+      // ilçe + il olarak tam eşleşen sonucu tıklıyoruz.
+      // Koordinat / fallback / başka sokak tahmini kesinlikle yok.
+      final url = _nativeRoutePlannerUrl(rtext: startForRoute);
       _lastMapUrl = url;
-      _routeBuilt = true;
+      _routeBuilt = false;
       _startPointLabel = start;
       await _mapController.loadUrl(url);
-      _startYandexOrderSync(routeJobs);
-      await Future<void>.delayed(const Duration(milliseconds: 1800));
-      final optimizedAutomatically = await _clickYandexOptimizeIfAvailable();
+      await Future<void>.delayed(const Duration(milliseconds: 900));
+
+      if (!await _ensureYandexRouteInput(0)) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Yandex rota alanı hazırlanamadı. Tekrar deneyin.'),
+            ),
+          );
+        }
+        return;
+      }
+
+      final failed = <TechnicianJob>[];
+      for (var i = 0; i < jobs.length; i++) {
+        final job = jobs[i];
+        final resolved = await _addJobFromYandexSuggestions(job, i + 1);
+        if (resolved == null) {
+          failed.add(job);
+          break;
+        }
+      }
+
+      if (failed.isNotEmpty) {
+        _yandexRouteSyncTimer?.cancel();
+        if (mounted) {
+          setState(() {
+            _routeBuilt = false;
+            _invalidAddressJobIds = failed.map((e) => e.id).toSet();
+            _invalidAddressResolvedText = <String, String>{};
+            _selectedJob = failed.first;
+          });
+          final names = failed.map((e) => e.customerName).join(', ');
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              duration: const Duration(seconds: 9),
+              content: Text(
+                'Yandex’te tam adres bulunamadı: $names. Müşteriyi arayıp adresi düzeltin.',
+              ),
+            ),
+          );
+        }
+        return;
+      }
+
+      // Her durak Yandex'in kendi önerisinden seçildi. Bu noktada başka bir
+      // geocoder/tahmin kontrolü çalıştırmıyoruz; seçilen gerçek Yandex sonucu
+      // rota için tek doğruluk kaynağıdır.
+      _routeBuilt = true;
+      _invalidAddressJobIds = <String>{};
+      _invalidAddressResolvedText = <String, String>{};
+
+      _localRouteOrderIds = jobs.map((job) => job.id).toList(growable: false);
+      _startYandexOrderSync(jobs);
 
       if (mounted) {
         setState(() {});
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            duration: const Duration(seconds: 8),
+            duration: const Duration(seconds: 5),
             content: Text(
-              optimizedAutomatically
-                  ? 'Yandex rotasi optimize edildi. Yandex sirasi soldaki is listesine otomatik aktariliyor.'
-                  : 'Isler Yandex rota ekranina yuklendi. “Optimize et” gorunuyorsa bir kez basin; soldaki liste Yandex sirasi ile otomatik eslesir.',
+              '${jobs.length} müşteri Yandex’in kendi adres önerilerinden seçilerek rotaya eklendi.',
             ),
           ),
         );
@@ -617,13 +1157,6 @@ class _TechnicianJobsScreenState extends ConsumerState<TechnicianJobsScreen> {
     } finally {
       if (mounted) setState(() => _optimizing = false);
     }
-  }
-
-  String _routeUrl(List<TechnicianJob> jobs) {
-    if (_lastMapUrl != null && _lastMapUrl!.contains('mode=routes')) {
-      return _lastMapUrl!;
-    }
-    return _nativeRoutePlannerUrl();
   }
 
   Future<void> _syncMap(List<TechnicianJob> jobs) async {
@@ -634,16 +1167,19 @@ class _TechnicianJobsScreenState extends ConsumerState<TechnicianJobsScreen> {
   }
 
   Future<void> _launchYandex(List<TechnicianJob> jobs) async {
+    final points = jobs
+        .map(_nativeRoutePointForJob)
+        .where((value) => value.trim().isNotEmpty)
+        .toList(growable: false);
+    if (points.isEmpty) return;
     await launchUrl(
-      Uri.parse(_routeUrl(jobs)),
+      Uri.parse(_nativeRoutePlannerUrl(rtext: points.join('~'))),
       mode: LaunchMode.externalApplication,
     );
   }
 
   Future<void> _launchMap(TechnicianJob job) async {
-    final query = job.mapQuery.trim().isNotEmpty
-        ? job.mapQuery.trim()
-        : job.locationText.trim();
+    final query = _canonicalJobAddress(job).trim();
     if (query.isEmpty) return;
     await launchUrl(
       Uri.https('yandex.com.tr', '/maps/', {
@@ -773,154 +1309,6 @@ class _TechnicianJobsScreenState extends ConsumerState<TechnicianJobsScreen> {
     );
   }
 
-  Future<({double lat, double lon})?> _geocodeAddress(
-    String address, {
-    String expectedCity = '',
-    String expectedDistrict = '',
-  }) async {
-    final clean = address.trim();
-    if (clean.isEmpty) return null;
-
-    final cityKey = _foldAddressText(expectedCity);
-    final districtKey = _foldAddressText(expectedDistrict);
-
-    bool candidateMatchesExpectedArea(String label) {
-      final folded = _foldAddressText(label);
-      if (cityKey.isNotEmpty && !folded.contains(cityKey)) return false;
-      // "Merkez" bir cok servis sonucunda ayri bir idari ad olarak gecmeyebilir.
-      if (districtKey.isNotEmpty &&
-          districtKey != 'merkez' &&
-          !folded.contains(districtKey)) {
-        return false;
-      }
-      return true;
-    }
-
-    if (_yandexGeocoderKey.trim().isNotEmpty) {
-      final client = HttpClient();
-      try {
-        final uri = Uri.https('geocode-maps.yandex.ru', '/v1/', {
-          'apikey': _yandexGeocoderKey,
-          'geocode': clean,
-          'lang': 'tr_TR',
-          'format': 'json',
-          'results': '5',
-        });
-        final request = await client.getUrl(uri);
-        request.headers.set(HttpHeaders.acceptHeader, 'application/json');
-        final response = await request.close();
-        final body = await utf8.decoder.bind(response).join();
-        if (response.statusCode == 200) {
-          final decoded = jsonDecode(body);
-          if (decoded is Map) {
-            final responseMap = decoded['response'];
-            final collection = responseMap is Map
-                ? responseMap['GeoObjectCollection']
-                : null;
-            final members = collection is Map ? collection['featureMember'] : null;
-            if (members is List) {
-              for (final member in members) {
-                final geoObject = member is Map ? member['GeoObject'] : null;
-                if (geoObject is! Map) continue;
-                final meta = geoObject['metaDataProperty'];
-                final geocoderMeta = meta is Map ? meta['GeocoderMetaData'] : null;
-                final label = geocoderMeta is Map
-                    ? '${geocoderMeta['text'] ?? ''} ${geocoderMeta['Address'] ?? ''}'
-                    : '';
-                if ((cityKey.isNotEmpty || districtKey.isNotEmpty) &&
-                    !candidateMatchesExpectedArea(label)) {
-                  continue;
-                }
-                final point = geoObject['Point'];
-                final pos = point is Map ? point['pos']?.toString() : null;
-                if (pos == null) continue;
-                final parts = pos.trim().split(RegExp(r'\s+'));
-                if (parts.length < 2) continue;
-                final lon = double.tryParse(parts[0]);
-                final lat = double.tryParse(parts[1]);
-                if (lat != null && lon != null) return (lat: lat, lon: lon);
-              }
-            }
-          }
-        }
-      } catch (_) {
-        // Yandex API anahtari yoksa/asagi dusmusse kontrollu fallback denenir.
-      } finally {
-        client.close(force: true);
-      }
-    }
-
-    final client = HttpClient();
-    try {
-      final uri = Uri.https('nominatim.openstreetmap.org', '/search', {
-        'q': clean,
-        'format': 'jsonv2',
-        'limit': '8',
-        'countrycodes': 'tr',
-        'addressdetails': '1',
-      });
-      final request = await client.getUrl(uri);
-      request.headers.set(HttpHeaders.acceptHeader, 'application/json');
-      request.headers.set(
-        HttpHeaders.userAgentHeader,
-        'MOTUS-ERP/1.0 technician-route',
-      );
-      final response = await request.close();
-      final body = await utf8.decoder.bind(response).join();
-      if (response.statusCode != 200) return null;
-      final decoded = jsonDecode(body);
-      if (decoded is! List || decoded.isEmpty) return null;
-
-      Map? best;
-      var bestScore = -1;
-      final cleanKey = _foldAddressText(clean);
-      final numberToken = RegExp(r'\bno\s*(\d+[a-z]?)\b')
-          .firstMatch(cleanKey)
-          ?.group(1);
-      final streetToken = RegExp(r'\b(\d+(?:\s+\d+)?)\s+sokak\b')
-          .firstMatch(cleanKey)
-          ?.group(1)
-          ?.replaceAll(' ', '/');
-
-      for (final candidate in decoded) {
-        if (candidate is! Map) continue;
-        final display = candidate['display_name']?.toString() ?? '';
-        if (display.isEmpty) continue;
-        if ((cityKey.isNotEmpty || districtKey.isNotEmpty) &&
-            !candidateMatchesExpectedArea(display)) {
-          continue;
-        }
-
-        final folded = _foldAddressText(display);
-        var score = 0;
-        if (cityKey.isNotEmpty && folded.contains(cityKey)) score += 10;
-        if (districtKey.isNotEmpty && folded.contains(districtKey)) score += 12;
-        if (numberToken != null && folded.contains(numberToken)) score += 4;
-        if (streetToken != null) {
-          final flatStreet = streetToken.replaceAll('/', ' ');
-          // Sokak numarası uyuşmuyorsa ilçe merkezini veya benzer isimli başka
-          // bir yolu kesin konum diye kabul etmiyoruz.
-          if (!folded.contains(flatStreet)) continue;
-          score += 20;
-        }
-        if (score > bestScore) {
-          bestScore = score;
-          best = candidate;
-        }
-      }
-
-      if (best == null) return null;
-      final lat = double.tryParse(best['lat']?.toString() ?? '');
-      final lon = double.tryParse(best['lon']?.toString() ?? '');
-      if (lat == null || lon == null) return null;
-      return (lat: lat, lon: lon);
-    } catch (_) {
-      return null;
-    } finally {
-      client.close(force: true);
-    }
-  }
-
   ({double lat, double lon}) _cityCenter(String city) {
     final key = _foldAddressText(city);
     if (key.contains('aydin')) return (lat: 37.8444, lon: 27.8458);
@@ -983,84 +1371,6 @@ class _TechnicianJobsScreenState extends ConsumerState<TechnicianJobsScreen> {
       _routeBuilt = false;
     });
     await _syncMap(jobs);
-  }
-
-  Future<void> _pickCustomerMapPoint(TechnicianJob job) async {
-    var initial = _cityCenter(job.city);
-    if (job.mapsUrl?.startsWith('motus-pin:') == true &&
-        job.hasUsableTurkeyCoordinates) {
-      initial = (lat: job.latitude!, lon: job.longitude!);
-    } else {
-      final approx = await _geocodeAddress(
-        _canonicalJobAddress(job),
-        expectedCity: job.city,
-        expectedDistrict: job.district,
-      );
-      if (approx != null) initial = approx;
-    }
-    if (!mounted) return;
-
-    final picked = await _showMapPointPicker(
-      title: '${job.customerName} - Konumu Düzelt',
-      subtitle: 'Müşterinin gerçek bina/kapı noktasına tıklayın. Bundan sonra rota bu pini kullanır.',
-      initialLat: initial.lat,
-      initialLon: initial.lon,
-    );
-    if (picked == null || !mounted) return;
-
-    try {
-      await ref.read(serviceExecutionRepositoryProvider).saveCustomerMapPoint(
-            customerId: job.customerId,
-            latitude: picked.lat,
-            longitude: picked.lon,
-          );
-      _jobPointCache[job.id] = picked;
-      setState(() {
-        _lastMapUrl = null;
-        _routeBuilt = false;
-        _future = _load();
-      });
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Müşteri konumu haritadan kaydedildi.')),
-        );
-      }
-    } catch (error) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Konum kaydedilemedi: $error')),
-        );
-      }
-    }
-  }
-
-  Future<({double lat, double lon})?> _jobPoint(TechnicianJob job) async {
-    final cached = _jobPointCache[job.id];
-    if (cached != null) return cached;
-
-    // Teknikerin haritadan seçtiği pin en güvenilir kaynaktır.
-    if (job.mapsUrl?.startsWith('motus-pin:') == true &&
-        job.hasUsableTurkeyCoordinates) {
-      final point = (lat: job.latitude!, lon: job.longitude!);
-      _jobPointCache[job.id] = point;
-      return point;
-    }
-
-    // Rota siralamasi icin de once acik adresi yeniden cozmeye calisiyoruz.
-    // Boylece veritabaninda kalmis eski/yanlis koordinatlar siralamayi bozmaz.
-    final geocoded = await _geocodeAddress(
-      _canonicalJobAddress(job),
-      expectedCity: job.city,
-      expectedDistrict: job.district,
-    );
-    if (geocoded != null) {
-      _jobPointCache[job.id] = geocoded;
-      return geocoded;
-    }
-
-    // Eski otomatik koordinata körlemesine geri dönmüyoruz. Yanlış eski
-    // koordinat rotayı başka ile götürmektense kullanıcıdan haritada pin isteriz.
-    return null;
   }
 
   double _pointDistanceMeters(
@@ -1765,8 +2075,13 @@ class _TechnicianJobsScreenState extends ConsumerState<TechnicianJobsScreen> {
     required bool compact,
   }) {
     final selected = _selectedJob?.id == job.id;
+    final invalidAddress = _invalidAddressJobIds.contains(job.id);
     return Material(
-      color: selected ? const Color(0xFFE7F8FA) : Colors.transparent,
+      color: invalidAddress
+          ? const Color(0xFFFFF1F1)
+          : selected
+              ? const Color(0xFFE7F8FA)
+              : Colors.transparent,
       child: InkWell(
         onTap: () => setState(() => _selectedJob = job),
         child: Padding(
@@ -1795,7 +2110,25 @@ class _TechnicianJobsScreenState extends ConsumerState<TechnicianJobsScreen> {
                       style: const TextStyle(fontWeight: FontWeight.w900),
                     ),
                   ),
-                  if (index == 0) ...[
+                  if (invalidAddress) ...[
+                    Container(
+                      margin: const EdgeInsets.only(right: 6),
+                      padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFFFE2E2),
+                        borderRadius: BorderRadius.circular(20),
+                      ),
+                      child: const Text(
+                        'Adres Hatalı',
+                        style: TextStyle(
+                          color: Color(0xFFC83E3E),
+                          fontSize: 10,
+                          fontWeight: FontWeight.w900,
+                        ),
+                      ),
+                    ),
+                  ],
+                  if (index == 0 && !invalidAddress) ...[
                     Container(
                       margin: const EdgeInsets.only(right: 6),
                       padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
@@ -1830,6 +2163,19 @@ class _TechnicianJobsScreenState extends ConsumerState<TechnicianJobsScreen> {
                 overflow: TextOverflow.ellipsis,
                 style: const TextStyle(color: Color(0xFF65778A), fontSize: 12),
               ),
+              if (invalidAddress) ...[
+                const SizedBox(height: 4),
+                Text(
+                  _invalidAddressResolvedText[job.id]?.trim().isNotEmpty == true
+                      ? 'Yandex farklı buldu: ${_invalidAddressResolvedText[job.id]}'
+                      : 'Yandex bu adresi doğrulayamadı. Müşteriyi arayıp adresi düzeltin.',
+                  style: const TextStyle(
+                    color: Color(0xFFC83E3E),
+                    fontSize: 11,
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+              ],
               const SizedBox(height: 4),
               Text(
                 _serviceTypeLabel(job.serviceType),
@@ -1870,7 +2216,7 @@ class _TechnicianJobsScreenState extends ConsumerState<TechnicianJobsScreen> {
                       label: const Text('Gidemiyorum'),
                     ),
                     FilledButton(
-                      onPressed: () => _openJob(job),
+                      onPressed: invalidAddress ? null : () => _openJob(job),
                       child: const Text('İşi Aç'),
                     ),
                   ],
@@ -2076,7 +2422,92 @@ class _TechnicianJobsScreenState extends ConsumerState<TechnicianJobsScreen> {
             const Divider(height: 1),
             Expanded(
               child: Platform.isWindows && _mapReady
-                  ? Webview(_mapController)
+                  ? Stack(
+                      children: [
+                        Positioned.fill(child: Webview(_mapController)),
+                        if (_invalidAddressJobIds.isNotEmpty)
+                          Positioned(
+                            left: 16,
+                            right: 16,
+                            top: 16,
+                            child: IgnorePointer(
+                              child: Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                                decoration: BoxDecoration(
+                                  color: const Color(0xFFFFECEC),
+                                  borderRadius: BorderRadius.circular(10),
+                                  border: Border.all(color: const Color(0xFFFFB8B8)),
+                                  boxShadow: const [
+                                    BoxShadow(
+                                      color: Color(0x22000000),
+                                      blurRadius: 8,
+                                      offset: Offset(0, 2),
+                                    ),
+                                  ],
+                                ),
+                                child: const Row(
+                                  children: [
+                                    Icon(Icons.warning_amber_rounded, color: Color(0xFFC83E3E)),
+                                    SizedBox(width: 8),
+                                    Expanded(
+                                      child: Text(
+                                        'ROTA GEÇERSİZ — adresi hatalı görünen müşteriyi arayıp adresi düzeltin.',
+                                        style: TextStyle(
+                                          color: Color(0xFF9C2F2F),
+                                          fontWeight: FontWeight.w900,
+                                          fontSize: 12,
+                                        ),
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ),
+                          ),
+                        if (_routeBuilt && jobs.isNotEmpty)
+                          Positioned(
+                            right: 18,
+                            bottom: 18,
+                            child: IgnorePointer(
+                              child: Container(
+                                constraints: const BoxConstraints(maxWidth: 210),
+                                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                                decoration: BoxDecoration(
+                                  color: Colors.white.withValues(alpha: 0.92),
+                                  borderRadius: BorderRadius.circular(10),
+                                  border: Border.all(color: const Color(0xFFD8E4EA)),
+                                  boxShadow: const [
+                                    BoxShadow(
+                                      color: Color(0x22000000),
+                                      blurRadius: 8,
+                                      offset: Offset(0, 2),
+                                    ),
+                                  ],
+                                ),
+                                child: Column(
+                                  mainAxisSize: MainAxisSize.min,
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: jobs.asMap().entries.map((entry) {
+                                    return Padding(
+                                      padding: const EdgeInsets.symmetric(vertical: 2),
+                                      child: Text(
+                                        '${entry.key + 1}  ${entry.value.customerName}',
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
+                                        style: const TextStyle(
+                                          color: Color(0xFF12304A),
+                                          fontSize: 11,
+                                          fontWeight: FontWeight.w800,
+                                        ),
+                                      ),
+                                    );
+                                  }).toList(growable: false),
+                                ),
+                              ),
+                            ),
+                          ),
+                      ],
+                    )
                   : Center(
                       child: FilledButton.icon(
                         onPressed: () => _launchYandex(jobs),
@@ -2091,6 +2522,7 @@ class _TechnicianJobsScreenState extends ConsumerState<TechnicianJobsScreen> {
 
   Widget _detailPanel() {
     final job = _selectedJob;
+    final invalidAddress = job != null && _invalidAddressJobIds.contains(job.id);
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: _panelDecoration(),
@@ -2115,6 +2547,49 @@ class _TechnicianJobsScreenState extends ConsumerState<TechnicianJobsScreen> {
                           job.locationText,
                           style: const TextStyle(color: Color(0xFF65778A)),
                         ),
+                        if (invalidAddress) ...[
+                          const SizedBox(height: 10),
+                          Container(
+                            width: double.infinity,
+                            padding: const EdgeInsets.all(10),
+                            decoration: BoxDecoration(
+                              color: const Color(0xFFFFF1F1),
+                              borderRadius: BorderRadius.circular(10),
+                              border: Border.all(color: const Color(0xFFFFCACA)),
+                            ),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                const Text(
+                                  'Adres Yandex tarafından doğrulanamadı',
+                                  style: TextStyle(
+                                    color: Color(0xFFC83E3E),
+                                    fontWeight: FontWeight.w900,
+                                  ),
+                                ),
+                                const SizedBox(height: 4),
+                                const Text(
+                                  'Müşteriyi arayın, doğru adresi isteyin ve Bilgileri Düzenle bölümünden kaydedin.',
+                                  style: TextStyle(
+                                    color: Color(0xFF8B3A3A),
+                                    fontSize: 12,
+                                    fontWeight: FontWeight.w700,
+                                  ),
+                                ),
+                                if (_invalidAddressResolvedText[job.id]?.trim().isNotEmpty == true) ...[
+                                  const SizedBox(height: 4),
+                                  Text(
+                                    'Yandex’in bulduğu: ${_invalidAddressResolvedText[job.id]}',
+                                    style: const TextStyle(
+                                      color: Color(0xFF8B3A3A),
+                                      fontSize: 11,
+                                    ),
+                                  ),
+                                ],
+                              ],
+                            ),
+                          ),
+                        ],
                         const SizedBox(height: 8),
                         Text(
                           'Planlama: ${_timeLabel(job)}',
@@ -2130,6 +2605,17 @@ class _TechnicianJobsScreenState extends ConsumerState<TechnicianJobsScreen> {
                           _serviceTypeLabel(job.serviceType),
                           style: const TextStyle(fontWeight: FontWeight.w900),
                         ),
+                        if (job.secretaryName.trim().isNotEmpty) ...[
+                          const SizedBox(height: 5),
+                          Text(
+                            'Talebi açan: ${job.secretaryName.trim()}',
+                            style: const TextStyle(
+                              fontSize: 12,
+                              color: Color(0xFF65778A),
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                        ],
                         if (job.plannedProductName.isNotEmpty) ...[
                           const SizedBox(height: 8),
                           Text(
@@ -2150,7 +2636,7 @@ class _TechnicianJobsScreenState extends ConsumerState<TechnicianJobsScreen> {
                             .isNotEmpty) ...[
                           const Divider(height: 28),
                           const Text(
-                            'Not',
+                            'Sekreter Notu',
                             style: TextStyle(fontWeight: FontWeight.w900),
                           ),
                           const SizedBox(height: 5),
@@ -2186,7 +2672,7 @@ class _TechnicianJobsScreenState extends ConsumerState<TechnicianJobsScreen> {
                 SizedBox(
                   width: double.infinity,
                   child: FilledButton.icon(
-                    onPressed: () => _openJob(job),
+                    onPressed: invalidAddress ? null : () => _openJob(job),
                     icon: const Icon(Icons.play_arrow_rounded),
                     label: const Text('İşe Başla'),
                   ),
@@ -2206,7 +2692,7 @@ class _TechnicianJobsScreenState extends ConsumerState<TechnicianJobsScreen> {
                     const SizedBox(width: 8),
                     Expanded(
                       child: OutlinedButton.icon(
-                        onPressed: job.phone.isEmpty
+                        onPressed: invalidAddress || job.phone.isEmpty
                             ? null
                             : () => _sendOnMyWay(job.phone, job.customerName),
                         icon: const Icon(Icons.chat_outlined),
@@ -2220,7 +2706,7 @@ class _TechnicianJobsScreenState extends ConsumerState<TechnicianJobsScreen> {
                   children: [
                     Expanded(
                       child: OutlinedButton.icon(
-                        onPressed: job.mapQuery.isEmpty
+                        onPressed: invalidAddress || job.mapQuery.isEmpty
                             ? null
                             : () => _launchMap(job),
                         icon: const Icon(Icons.navigation_outlined),

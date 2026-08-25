@@ -885,6 +885,9 @@ class _ServiceExecutionScreenState
       'technician_can_collect_payment',
       fallback: true,
     );
+    final secretaryNote = job.description
+        .replaceAll(RegExp(r'^\[[^\]]+\]\s*'), '')
+        .trim();
 
     return Scaffold(
       appBar: AppBar(
@@ -923,6 +926,31 @@ class _ServiceExecutionScreenState
                 ),
               ),
             ),
+            if (job.secretaryName.trim().isNotEmpty || secretaryNote.isNotEmpty) ...[
+              Card(
+                child: Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text(
+                        'Sekreter Bilgisi',
+                        style: TextStyle(fontWeight: FontWeight.w900),
+                      ),
+                      if (job.secretaryName.trim().isNotEmpty) ...[
+                        const SizedBox(height: 6),
+                        Text('Talebi açan: ${job.secretaryName.trim()}'),
+                      ],
+                      if (secretaryNote.isNotEmpty) ...[
+                        const SizedBox(height: 8),
+                        Text('Not: $secretaryNote'),
+                      ],
+                    ],
+                  ),
+                ),
+              ),
+              const SizedBox(height: 12),
+            ],
             if (job.plannedProductName.isNotEmpty) ...[
               Card(
                 child: ListTile(
