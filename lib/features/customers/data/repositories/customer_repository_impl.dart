@@ -320,6 +320,23 @@ class CustomerRepositoryImpl implements CustomerRepository {
       isUpdate: true,
     );
     try {
+      if (role == 'technician') {
+        // Teknisyen müşteri listesine genel erişmez; yalnız kendisine atanmış
+        // müşteriyi güvenli RPC üzerinden düzenler. Bu aynı zamanda RLS yüzünden
+        // `.single()` sorgusunun 0 satır dönüp PGRST116 üretmesini engeller.
+        final response = await supabase.rpc(
+          'technician_update_customer_v1',
+          params: {
+            'p_customer_id': customerId,
+            'p_patch': payload,
+          },
+        );
+        if (response is Map) {
+          return CustomerModel.fromJson(Map<String, dynamic>.from(response));
+        }
+        throw const AppException('Müşteri bilgileri güncellenemedi.');
+      }
+
       final response = await supabase
           .from('customers')
           .update(payload)
@@ -446,6 +463,18 @@ class CustomerRepositoryImpl implements CustomerRepository {
     }
 
     try {
+      if (profile['role']?.toString() == 'technician') {
+        final response = await supabase.rpc(
+          'technician_customer_card_v1',
+          params: {'p_customer_id': customerId},
+        );
+        if (response == null) return null;
+        if (response is Map) {
+          return CustomerModel.fromJson(Map<String, dynamic>.from(response));
+        }
+        return null;
+      }
+
       final response = await supabase
           .from('customers')
           .select()
@@ -477,19 +506,45 @@ class CustomerRepositoryImpl implements CustomerRepository {
 
   Future<Map<String, dynamic>?> _currentProfile(SupabaseClient supabase) async {
     final user = supabase.auth.currentUser;
-    if (user == null) {
-      return null;
+    if (user == null) return null;
+
+    // RLS altında `profiles.maybeSingle()` bazı tekniker hesaplarında 0 satır
+    // dönüp "Cannot coerce the result to a single JSON object" üretebiliyordu.
+    // Firma/rol için SECURITY DEFINER yardımcılarını önce kullanıyoruz.
+    try {
+      dynamic companyId;
+      dynamic role;
+      try {
+        companyId = await supabase.rpc('erp_auth_company_id');
+        role = await supabase.rpc('erp_auth_role');
+      } catch (_) {
+        companyId = await supabase.rpc('current_company_id');
+        role = await supabase.rpc('current_user_role');
+      }
+      final company = companyId?.toString() ?? '';
+      final roleText = role?.toString() ?? '';
+      if (company.isNotEmpty && roleText.isNotEmpty) {
+        return <String, dynamic>{
+          'id': user.id,
+          'company_id': company,
+          'role': roleText,
+        };
+      }
+    } catch (_) {
+      // Eski kurulumlarda RPC yoksa aşağıdaki klasik sorguya düş.
     }
 
-    final response = await supabase
-        .from('profiles')
-        .select('id, company_id, role')
-        .eq('id', user.id)
-        .maybeSingle();
-    if (response == null) {
+    try {
+      final rows = await supabase
+          .from('profiles')
+          .select('id, company_id, role')
+          .eq('id', user.id)
+          .limit(1);
+      if (rows is! List || rows.isEmpty || rows.first is! Map) return null;
+      return Map<String, dynamic>.from(rows.first as Map);
+    } catch (_) {
       return null;
     }
-    return Map<String, dynamic>.from(response);
   }
 
   Future<Map<String, dynamic>> _companyBehaviorSettings(

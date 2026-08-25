@@ -330,6 +330,16 @@ class _CustomerFormScreenState extends ConsumerState<CustomerFormScreen> {
      * Yeni müşteride müşteri türü varsayılan olarak
      * bireysel kaydediliyor.
      */
+    final newCity = cityController.text.trim();
+    final newDistrict = districtController.text.trim();
+    final newNeighborhood = neighborhoodController.text.trim();
+    final newAddress = addressController.text.trim();
+    final locationChanged = existingCustomer != null &&
+        ((existingCustomer.city ?? '').trim() != newCity ||
+            (existingCustomer.district ?? '').trim() != newDistrict ||
+            (existingCustomer.neighborhood ?? '').trim() != newNeighborhood ||
+            existingCustomer.address.trim() != newAddress);
+
     final customer = CustomerModel(
       id: widget.customerId,
       customerType: existingCustomer?.customerType ?? CustomerType.individual,
@@ -338,13 +348,15 @@ class _CustomerFormScreenState extends ConsumerState<CustomerFormScreen> {
       phone: phoneController.text.trim(),
       alternativePhone: existingCustomer?.alternativePhone,
       email: existingCustomer?.email,
-      city: cityController.text.trim(),
-      district: districtController.text.trim(),
-      neighborhood: neighborhoodController.text.trim(),
-      address: addressController.text.trim(),
-      latitude: existingCustomer?.latitude,
-      longitude: existingCustomer?.longitude,
-      mapsUrl: existingCustomer?.mapsUrl,
+      city: newCity,
+      district: newDistrict,
+      neighborhood: newNeighborhood,
+      address: newAddress,
+      // Adres değiştiyse eski koordinat kesinlikle korunmaz. Rota ekranı yeni
+      // adresi tekrar geocode ederek doğru noktayı kullanır.
+      latitude: locationChanged ? null : existingCustomer?.latitude,
+      longitude: locationChanged ? null : existingCustomer?.longitude,
+      mapsUrl: locationChanged ? null : existingCustomer?.mapsUrl,
       notes: notesController.text.trim(),
       isActive: isActive,
       registrationDate: registrationDate,

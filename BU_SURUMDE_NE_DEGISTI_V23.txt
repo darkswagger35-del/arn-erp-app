@@ -1,0 +1,9 @@
+V23 - TEKNIKER YANDEX ADRES COZUMLEME FIX
+
+- Asil hata bulundu: V22'de temiz adres hazirlaniyordu ancak Yandex rota URL'sine once ham customer.address/mapQuery gonderiliyordu.
+- Ornek: "924/1 no:9 k:4 d:4" gibi adres Yandex tarafinda "Izmir, 11B" olarak yanlis cozuluyordu.
+- Artik rota noktasi once normalize edilir: Sokak + No + Mahalle + Ilce + Il + Turkiye.
+- Kat/daire bilgileri rota sorgusundan cikartilir.
+- Tek is icin Harita butonu da ayni temiz adresi kullanir.
+- Ham adres sadece normalize edilemeyen cok eski kayitlarda yedek olarak kullanilir.
+- SQL degisikligi yoktur.

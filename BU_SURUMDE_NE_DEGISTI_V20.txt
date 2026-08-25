@@ -1,0 +1,9 @@
+ARN ERP V20
+
+- Geciken servisleri sekretere gönderme kontrolü Türkiye saat dilimine göre düzeltildi.
+- 00:00-03:00 arasında uygulama 25 Ağustos'u görürken Supabase UTC nedeniyle 24 Ağustos sanıp gönderimi reddediyordu.
+- send_overdue_service_to_secretary_v1 artık Europe/Istanbul takvim gününü kullanıyor.
+- Servis/sekreter/rota akışlarına başka değişiklik yapılmadı.
+
+Kurulum:
+Supabase SQL Editor içinde SUPABASE_V12_GECIKEN_SAAT_DILIMI_FIX.sql dosyasını bir kez çalıştırın.

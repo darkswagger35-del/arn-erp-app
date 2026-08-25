@@ -1,0 +1,10 @@
+ARN ERP V24 - TEKNIKER ROTA / HARITA DÜZELTMESİ
+
+1) Başlangıç noktası artık adres metni yazarak değil harita üzerinden tıklanarak seçilir.
+2) Tekniker müşteri için "Konumu Haritadan Düzelt" ile kesin bina/kapı pini kaydedebilir.
+3) Manuel pin `motus-pin:` olarak işaretlenir ve rota hesaplarında en güvenilir kaynak kabul edilir.
+4) Eski/şüpheli koordinatlar otomatik fallback olarak kullanılmaz; adres net çözülemezse yanlış rota üretmek yerine pin seçilmesi istenir.
+5) Rota oluşturulduktan sonra Yandex'e müşteri adres metni değil koordinatlar gönderilir.
+6) Hesaplanan sıra aynı oturumda doğrudan sol iş listesine uygulanır; Supabase cevabı eski sırayı geri getiremez.
+7) Rota sırası Supabase'e `technician_save_route_order_v1` ile kalıcı kaydedilir.
+8) SUPABASE_V14_HARITA_PIN_VE_ROTA_SIRASI.sql bir kez çalıştırılmalıdır.

@@ -1,0 +1,27 @@
+ARN ERP V22 - TEKNIKER ROTA ADRES DUZELTMESI
+
+Sorunun asil nedeni:
+- config/dev.json icinde YANDEX_GEOCODER_API_KEY bos.
+- Tekniker rota ekrani, Yandex'e acik adresi vermeden once Nominatim/OpenStreetMap ile adresi koordinata ceviriyordu.
+- Eski kod Nominatim'in ilk sonucunu kontrol etmeden kabul ediyordu.
+- "924/1 no:11 k:4 d:4" ve "1023 sok ... No:3 D:4" gibi saha adresleri bu nedenle ayni/yanlis "Izmir, 11B" noktasina cozuluyordu.
+- Sonra uygulama bu yanlis koordinati Yandex'e verdigi icin, Yandex artik asil acik adresi goremedigi icin yanlisi duzeltemiyordu.
+
+V22 duzeltmesi:
+1) Yandex rota noktalarina musteri icin artik Nominatim koordinati gonderilmiyor.
+2) Yandex rota noktalarina musterinin kayitli TAM adresi (adres + ilce + il + Turkiye) dogrudan gonderiliyor.
+   Asagidaki standartlastirma sadece rota siralamasi icin kullanilan kontrollu geocode fallback'inde uygulanir:
+   - 924/1 no:11 k:4 d:4 -> 924/1 Sokak No:11, Bayrakli, Izmir, Turkiye
+   - 1657 Sk. No:7 -> 1657 Sokak No:7, ilce, Izmir, Turkiye
+   - 7467/1 sk. No:1 k:2 d:4 -> 7467/1 Sokak No:1, ilce, Izmir, Turkiye
+   - 542sk no:44 k:2 -> 542 Sokak No:44, ilce, Izmir, Turkiye
+   - 1023 sok ... No:3 D:4 -> 1023 Sokak No:3, ilce, Izmir, Turkiye
+3) Kat/daire gibi rota bulmayi bozan bilgiler navigasyon sorgusundan temizleniyor; musteri kartindaki gercek adres degismiyor.
+4) Rota siralamasi icin fallback geocoder artik ilk sonucu korlemesine kabul etmiyor.
+   - En fazla 8 aday inceleniyor.
+   - Il ve ilce eslesmeyen aday reddediliyor.
+   - Sokak/no eslesmesi puanlaniyor.
+5) Veritabaninda kalmis eski koordinatlar adres tekrar cozulmedikce ana kaynak olarak kullanilmiyor.
+6) Baslangic noktasi yine gercek GPS koordinati olarak Yandex'e gider.
+
+Bu surum icin yeni SQL gerekmez.

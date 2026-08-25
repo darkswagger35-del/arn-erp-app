@@ -657,6 +657,21 @@ class ServiceExecutionRepository {
     );
   }
 
+  Future<void> saveCustomerMapPoint({
+    required String customerId,
+    required double latitude,
+    required double longitude,
+  }) async {
+    await _client.rpc(
+      'technician_set_customer_map_point_v1',
+      params: {
+        'p_customer_id': customerId,
+        'p_latitude': latitude,
+        'p_longitude': longitude,
+      },
+    );
+  }
+
   Future<void> reportCannotAttend({
     required String serviceRequestId,
     required String reason,
