@@ -1,5 +1,6 @@
 import 'package:flutter/foundation.dart';
 import 'package:arn_erp_app/core/auth/app_role.dart';
+import 'package:arn_erp_app/core/auth/quick_login_codec.dart';
 import 'package:arn_erp_app/core/errors/app_exception.dart';
 import '../data/user_management_repository.dart';
 import '../domain/create_user_request.dart';
@@ -65,18 +66,18 @@ class UserManagementController extends ChangeNotifier {
     if (fullName.trim().isEmpty || email.trim().isEmpty || normalizedUsername.isEmpty) {
       return _fail('Ad soyad, kullanıcı adı ve e-posta zorunludur.');
     }
-    if (!RegExp(r'^[a-z0-9._-]{3,30}$').hasMatch(normalizedUsername)) {
-      return _fail('Kullanıcı adı 3-30 karakter olmalı; harf, rakam, nokta, tire ve alt çizgi kullanılabilir.');
+    if (!RegExp(r'^[a-z0-9._-]{1,30}$').hasMatch(normalizedUsername)) {
+      return _fail('Kullanıcı adı 1-30 karakter olmalı; harf, rakam, nokta, tire ve alt çizgi kullanılabilir.');
     }
     if (_state.users.any((u) => !u.isArchived && u.username.toLowerCase() == normalizedUsername)) {
       return _fail('Bu kullanıcı adı zaten kullanılıyor.');
     }
-    if (password.length < 6 || password != passwordConfirmation) {
-      return _fail(password.length < 6 ? 'Şifre en az 6 karakter olmalıdır.' : 'Şifreler eşleşmiyor.');
+    if (password.isEmpty || password != passwordConfirmation) {
+      return _fail(password.isEmpty ? 'Şifre en az 1 karakter olmalıdır.' : 'Şifreler eşleşmiyor.');
     }
     return _run(
       () => repository.createUser(CreateUserRequest(
-        fullName: fullName.trim(), username: normalizedUsername,
+        fullName: fullName.trim(), username: encodeQuickUsername(normalizedUsername),
         email: email.trim().toLowerCase(), phone: phone.trim(), role: role,
         password: password, passwordConfirmation: passwordConfirmation,
         isActive: isActive,
@@ -94,7 +95,7 @@ class UserManagementController extends ChangeNotifier {
     bool? isActive,
   }) => _run(
     () => repository.updateUser(
-      userId: userId, fullName: fullName, username: username?.trim().toLowerCase(),
+      userId: userId, fullName: fullName, username: username == null ? null : encodeQuickUsername(username.trim().toLowerCase()),
       phone: phone, role: role, isActive: isActive,
     ),
     'Kullanıcı bilgileri güncellendi.',
@@ -103,9 +104,9 @@ class UserManagementController extends ChangeNotifier {
   Future<bool> archiveUser(String id) => _run(() => repository.archiveUser(id), 'Kullanıcı arşive alındı.');
   Future<bool> restoreUser(String id, String username) {
     final normalizedUsername = username.trim().toLowerCase();
-    if (!RegExp(r'^[a-z0-9._-]{3,30}$').hasMatch(normalizedUsername)) {
+    if (!RegExp(r'^[a-z0-9._-]{1,30}$').hasMatch(normalizedUsername)) {
       return Future.value(_fail(
-        'Kullanıcı adı 3-30 karakter olmalı; harf, rakam, nokta, tire ve alt çizgi kullanılabilir.',
+        'Kullanıcı adı 1-30 karakter olmalı; harf, rakam, nokta, tire ve alt çizgi kullanılabilir.',
       ));
     }
     if (_state.users.any((u) =>
@@ -115,13 +116,13 @@ class UserManagementController extends ChangeNotifier {
       return Future.value(_fail('Bu kullanıcı adı zaten kullanılıyor.'));
     }
     return _run(
-      () => repository.restoreUser(id, username: normalizedUsername),
+      () => repository.restoreUser(id, username: encodeQuickUsername(normalizedUsername)),
       'Kullanıcı geri yüklendi.',
     );
   }
   Future<bool> deleteUserPermanently(String id) => _run(() => repository.deleteUserPermanently(id), 'Kullanıcı kalıcı olarak silindi.');
-  Future<bool> setUserPassword(String id, String password) => password.length < 6
-      ? Future.value(_fail('Şifre en az 6 karakter olmalıdır.'))
+  Future<bool> setUserPassword(String id, String password) => password.isEmpty
+      ? Future.value(_fail('Şifre en az 1 karakter olmalıdır.'))
       : _run(() => repository.setUserPassword(userId: id, password: password), 'Şifre güncellendi.', reload: false);
   Future<PersonnelProfile> getPersonnelProfile(String id) => repository.getPersonnelProfile(id);
 

@@ -1,0 +1,12 @@
+MOTUS APK ACIL PAKET
+
+1) ZIP'i mevcut C:\arn-erp-app klasorunun USTUNE ac.
+2) Dosyalari degistir / uzerine yaz sec.
+3) C:\arn-erp-app\APK_OLUSTUR.bat dosyasina cift tikla.
+4) Islem bitince klasorun icinde MOTUS_ANDROID.apk olusacak.
+
+Bu APK release modunda uretilir.
+Mevcut Android release ayari debug anahtariyla imzali oldugu icin telefona direkt kurulabilir.
+Google Play icin daha sonra ayri production signing yapariz.
+
+SQL gerekmez.

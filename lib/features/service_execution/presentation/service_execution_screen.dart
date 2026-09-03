@@ -27,6 +27,8 @@ class _ServiceExecutionScreenState
   final _workController = TextEditingController();
   final _serviceFeeController = TextEditingController();
   final _extraFeeController = TextEditingController(text: '0');
+  final _cardCommissionController = TextEditingController(text: '0');
+  int _cardInstallments = 1;
 
   TechnicianJob? _job;
   List<Map<String, dynamic>> _products = const [];
@@ -46,6 +48,7 @@ class _ServiceExecutionScreenState
     super.initState();
     _serviceFeeController.addListener(_refreshAmounts);
     _extraFeeController.addListener(_refreshAmounts);
+    _cardCommissionController.addListener(_refreshAmounts);
     _load();
   }
 
@@ -55,8 +58,10 @@ class _ServiceExecutionScreenState
     _workController.dispose();
     _serviceFeeController.removeListener(_refreshAmounts);
     _extraFeeController.removeListener(_refreshAmounts);
+    _cardCommissionController.removeListener(_refreshAmounts);
     _serviceFeeController.dispose();
     _extraFeeController.dispose();
+    _cardCommissionController.dispose();
     for (final controller in _formFieldControllers.values) {
       controller.dispose();
     }
@@ -84,6 +89,9 @@ class _ServiceExecutionScreenState
         _descriptionController.text = _job?.description ?? '';
         _workController.text = _job?.completionNote ?? '';
         _appSettings = results[2] as CompanyAppSettings;
+        _cardCommissionController.text = _appSettings
+            .cardCommissionRate(_cardInstallments)
+            .toStringAsFixed(2);
         _prepareServiceFormFieldState(_job?.formValues ?? const <String, dynamic>{});
         if (!_appSettings.serviceRule('technician_can_collect_payment', fallback: true)) {
           _paymentMethod = 'open_account';
@@ -99,38 +107,72 @@ class _ServiceExecutionScreenState
         // satırı olarak işlenir. Böylece teknisyen araç stokundan düşer.
         _serviceFeeController.text = '0';
 
-        final plannedProductName = _job?.plannedProductName.trim() ?? '';
-        String? plannedId = _job?.plannedProductId;
-
-        // Eski/Excel kayıtlarında planned_product_id boş olup yalnızca ürün adı
-        // bulunabiliyor. Bu durumda araç deposundaki ürün adına göre eşleştir.
-        if ((plannedId == null || plannedId.isEmpty) &&
-            plannedProductName.isNotEmpty) {
-          for (final product in _products) {
-            final productName = product['name']?.toString().trim() ?? '';
-            if (productName.toLowerCase() == plannedProductName.toLowerCase()) {
-              plannedId = product['id']?.toString();
-              break;
+        final plannedItems = _job?.plannedItems ?? const <Map<String, dynamic>>[];
+        if (plannedItems.isNotEmpty) {
+          for (final item in plannedItems) {
+            String? plannedId = item['product_id']?.toString();
+            final plannedName = item['product_name']?.toString().trim() ?? '';
+            if ((plannedId == null || plannedId.isEmpty) && plannedName.isNotEmpty) {
+              for (final product in _products) {
+                final productName = product['name']?.toString().trim() ?? '';
+                if (productName.toLowerCase() == plannedName.toLowerCase()) {
+                  plannedId = product['id']?.toString();
+                  break;
+                }
+              }
             }
+            final qty = (item['quantity'] as num?)?.toDouble() ?? 0;
+            if (plannedId == null || plannedId.isEmpty || qty <= 0) continue;
+            _quantities[plannedId] = qty;
+            var unitPrice = (item['unit_price'] as num?)?.toDouble() ?? 0;
+            if (unitPrice <= 0) {
+              final lineTotal = (item['line_total'] as num?)?.toDouble() ?? 0;
+              if (lineTotal > 0) unitPrice = lineTotal / qty;
+            }
+            if (unitPrice <= 0) {
+              for (final product in _products) {
+                if (product['id']?.toString() == plannedId) {
+                  unitPrice = (product['sale_price'] as num?)?.toDouble() ?? 0;
+                  break;
+                }
+              }
+            }
+            _unitPrices[plannedId] = unitPrice;
           }
-        }
+        } else {
+          final plannedProductName = _job?.plannedProductName.trim() ?? '';
+          String? plannedId = _job?.plannedProductId;
 
-        if (plannedId != null &&
-            plannedId.isNotEmpty &&
-            (_job?.plannedQuantity ?? 0) > 0) {
-          _quantities[plannedId] = _job!.plannedQuantity.toDouble();
-          double defaultPrice = _job!.plannedUnitPrice > 0
-              ? _job!.plannedUnitPrice
-              : _job!.price;
-          if (defaultPrice <= 0) {
+          // Eski/Excel kayıtlarında planned_product_id boş olup yalnızca ürün adı
+          // bulunabiliyor. Bu durumda araç deposundaki ürün adına göre eşleştir.
+          if ((plannedId == null || plannedId.isEmpty) &&
+              plannedProductName.isNotEmpty) {
             for (final product in _products) {
-              if (product['id']?.toString() == plannedId) {
-                defaultPrice = (product['sale_price'] as num?)?.toDouble() ?? 0;
+              final productName = product['name']?.toString().trim() ?? '';
+              if (productName.toLowerCase() == plannedProductName.toLowerCase()) {
+                plannedId = product['id']?.toString();
                 break;
               }
             }
           }
-          _unitPrices[plannedId] = defaultPrice;
+
+          if (plannedId != null &&
+              plannedId.isNotEmpty &&
+              (_job?.plannedQuantity ?? 0) > 0) {
+            _quantities[plannedId] = _job!.plannedQuantity.toDouble();
+            double defaultPrice = _job!.plannedUnitPrice > 0
+                ? _job!.plannedUnitPrice
+                : _job!.price;
+            if (defaultPrice <= 0) {
+              for (final product in _products) {
+                if (product['id']?.toString() == plannedId) {
+                  defaultPrice = (product['sale_price'] as num?)?.toDouble() ?? 0;
+                  break;
+                }
+              }
+            }
+            _unitPrices[plannedId] = defaultPrice;
+          }
         }
         final available = _products
             .where((p) => (_quantities[p['id'].toString()] ?? 0) <= 0)
@@ -441,6 +483,15 @@ class _ServiceExecutionScreenState
   double get _collectedAmount =>
       _paymentMethod == 'open_account' ? 0 : _grandTotal;
 
+  double get _cardCommissionRate =>
+      _paymentMethod == 'card' ? _number(_cardCommissionController) : 0;
+
+  double get _cardCommissionAmount =>
+      _paymentMethod == 'card' ? _grandTotal * (_cardCommissionRate / 100) : 0;
+
+  double get _netCollectedAmount =>
+      _paymentMethod == 'open_account' ? 0 : _grandTotal - _cardCommissionAmount;
+
   Future<void> _startService() async {
     await ref
         .read(serviceExecutionRepositoryProvider)
@@ -550,6 +601,8 @@ class _ServiceExecutionScreenState
             extraAmount: _extraTotal,
             collectedAmount: _collectedAmount,
             paymentMethod: _paymentMethod,
+            cardInstallments: _paymentMethod == 'card' ? _cardInstallments : 1,
+            cardCommissionRate: _cardCommissionRate,
             items: _selectedItems,
           );
       // complete_service_v5 eski kurulumlarda açıklama alanını yeniden yazabildiği
@@ -577,8 +630,23 @@ class _ServiceExecutionScreenState
   }
 
   Future<void> _shareCompletedPdf() async {
-    final job = _job;
-    if (job == null) return;
+    final currentJob = _job;
+    if (currentJob == null) return;
+
+    // Servis tamamlanınca PDF'yi stale ekrandaki iş nesnesinden değil, mümkünse
+    // tekrar repository'den zenginleştirilmiş müşteri bilgileriyle üret. Böylece
+    // tekniker RLS'si nested customer bilgisini ilk yüklemede boş bırakmış olsa
+    // bile müşteri adı / telefon / adres PDF'ye doğru gelir.
+    TechnicianJob job = currentJob;
+    try {
+      final refreshed = await ref
+          .read(serviceExecutionRepositoryProvider)
+          .getJob(widget.serviceRequestId);
+      if (refreshed != null) job = refreshed;
+    } catch (_) {
+      // Yenileme başarısızsa paylaşımı engelleme; mevcut iş verisiyle devam et.
+    }
+
     final profile = ref.read(authControllerProvider).profile;
     final technicianName = profile?.fullName.trim().isNotEmpty == true
         ? profile!.fullName.trim()
@@ -886,7 +954,10 @@ class _ServiceExecutionScreenState
       fallback: true,
     );
     final secretaryNote = job.description
-        .replaceAll(RegExp(r'^\[[^\]]+\]\s*'), '')
+        .replaceAll(
+          RegExp(r'^(?:\[[^\]]+\]\s*)+', caseSensitive: false),
+          '',
+        )
         .trim();
 
     return Scaffold(
@@ -1108,6 +1179,43 @@ class _ServiceExecutionScreenState
                     }
                   : null,
             ),
+            if (_paymentMethod == 'card') ...[
+              const SizedBox(height: 12),
+              LayoutBuilder(
+                builder: (context, constraints) {
+                  final compact = constraints.maxWidth < 520;
+                  final installment = DropdownButtonFormField<int>(
+                    value: _cardInstallments,
+                    decoration: const InputDecoration(labelText: 'Taksit'),
+                    items: const [1, 2, 3, 4, 5, 6, 9, 12]
+                        .map((value) => DropdownMenuItem(value: value, child: Text(value == 1 ? 'Tek Çekim' : '$value Taksit')))
+                        .toList(),
+                    onChanged: (value) {
+                      final next = value ?? 1;
+                      setState(() {
+                        _cardInstallments = next;
+                        _cardCommissionController.text = _appSettings
+                            .cardCommissionRate(next)
+                            .toStringAsFixed(2);
+                      });
+                    },
+                  );
+                  final commission = TextFormField(
+                    controller: _cardCommissionController,
+                    readOnly: true,
+                    decoration: const InputDecoration(
+                      labelText: 'Kart Komisyonu (%)',
+                      helperText: 'Yönetici ayarlarından otomatik gelir',
+                      suffixIcon: Icon(Icons.lock_outline_rounded, size: 18),
+                    ),
+                  );
+                  if (compact) {
+                    return Column(children: [installment, const SizedBox(height: 10), commission]);
+                  }
+                  return Row(children: [Expanded(child: installment), const SizedBox(width: 10), Expanded(child: commission)]);
+                },
+              ),
+            ],
             const SizedBox(height: 18),
             Card(
               child: Padding(
@@ -1123,6 +1231,10 @@ class _ServiceExecutionScreenState
                       amount: _grandTotal,
                       bold: true,
                     ),
+                    if (_paymentMethod == 'card' && _cardCommissionAmount > 0) ...[
+                      _AmountRow(label: 'Kart Komisyonu', amount: -_cardCommissionAmount),
+                      _AmountRow(label: 'Net Tahsilat', amount: _netCollectedAmount, bold: true),
+                    ],
                   ],
                 ),
               ),

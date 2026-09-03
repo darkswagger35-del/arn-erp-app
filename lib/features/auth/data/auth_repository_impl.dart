@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../../../core/auth/app_role.dart';
+import '../../../core/auth/quick_login_codec.dart';
 import '../../../core/auth/auth_repository.dart';
 import '../../../core/auth/auth_state.dart' as app_auth_state;
 import '../../../core/errors/app_exception.dart';
@@ -14,6 +15,9 @@ class AuthRepositoryImpl implements AuthRepository {
   AuthRepositoryImpl({this._client});
 
   final SupabaseClient? _client;
+  Map<String, dynamic>? _authContextCache;
+  DateTime? _authContextCacheAt;
+  static const _authContextTtl = Duration(minutes: 5);
 
   @override
   Future<void> signIn({
@@ -32,20 +36,50 @@ class AuthRepositoryImpl implements AuthRepository {
       final client = _client ?? _ensureClient();
       var loginEmail = identifier.trim();
       if (!loginEmail.contains('@')) {
-        final resolved = await client.rpc(
+        // V70 hotfix: Eski kullanıcı adları (örn. "m1") veritabanında ham
+        // olarak saklanmış olabilir; V65 sonrası 1-2 karakterlik yeni hızlı
+        // kullanıcı adları ise q_ önekiyle saklanır. Önce kullanıcının ekranda
+        // gördüğü ham değeri çöz, bulunamazsa yeni quick-login kodlamasını dene.
+        final rawUsername = loginEmail.trim().toLowerCase();
+        dynamic resolved = await client.rpc(
           'erp_login_email_for_username',
-          params: {'p_username': loginEmail},
+          params: {'p_username': rawUsername},
         );
         loginEmail = resolved?.toString().trim() ?? '';
+
+        if (loginEmail.isEmpty) {
+          final encodedUsername = encodeQuickUsername(rawUsername);
+          if (encodedUsername != rawUsername) {
+            resolved = await client.rpc(
+              'erp_login_email_for_username',
+              params: {'p_username': encodedUsername},
+            );
+            loginEmail = resolved?.toString().trim() ?? '';
+          }
+        }
+
         if (loginEmail.isEmpty) {
           throw const AppException('Kullanıcı adı veya şifre hatalıdır.');
         }
       }
 
-      final response = await client.auth.signInWithPassword(
-        email: loginEmail,
-        password: password,
-      );
+      // Yeni kısa şifreler Supabase minimum uzunluk şartı nedeniyle kodlanır.
+      // Eski hesapların şifresi ham tutulmuş olabileceği için, kodlanmış deneme
+      // başarısız olursa yalnızca şifre gerçekten değişiyorsa ham değeri deneriz.
+      final encodedPassword = encodeQuickPassword(password);
+      AuthResponse response;
+      try {
+        response = await client.auth.signInWithPassword(
+          email: loginEmail,
+          password: encodedPassword,
+        );
+      } on AuthException {
+        if (encodedPassword == password) rethrow;
+        response = await client.auth.signInWithPassword(
+          email: loginEmail,
+          password: password,
+        );
+      }
 
       final user = response.user;
       if (user == null) {
@@ -90,6 +124,8 @@ class AuthRepositoryImpl implements AuthRepository {
     try {
       final client = _client ?? _ensureClient();
       await client.auth.signOut();
+      _authContextCache = null;
+      _authContextCacheAt = null;
     } on AuthException catch (error) {
       throw AppException(_mapAuthError(error.message));
     } catch (_) {
@@ -100,15 +136,25 @@ class AuthRepositoryImpl implements AuthRepository {
   Future<Map<String, dynamic>?> _getCurrentAuthContext() async {
     final client = _client ?? _ensureClient();
     if (client.auth.currentUser == null) {
+      _authContextCache = null;
+      _authContextCacheAt = null;
       return null;
+    }
+    final now = DateTime.now();
+    if (_authContextCache != null &&
+        _authContextCacheAt != null &&
+        now.difference(_authContextCacheAt!) < _authContextTtl) {
+      return _authContextCache;
     }
 
     try {
-      final response = await client.rpc('erp_current_auth_context');
-      if (response == null) {
-        return null;
-      }
-      return Map<String, dynamic>.from(response as Map);
+      final response = await client
+          .rpc('erp_current_auth_context')
+          .timeout(const Duration(seconds: 5));
+      if (response == null) return null;
+      _authContextCache = Map<String, dynamic>.from(response as Map);
+      _authContextCacheAt = now;
+      return _authContextCache;
     } catch (_) {
       return null;
     }

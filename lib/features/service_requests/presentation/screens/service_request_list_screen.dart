@@ -629,7 +629,7 @@ class _ServiceRequestListScreenState
       child: RefreshIndicator(
         onRefresh: _loadData,
         child: ListView(
-          padding: const EdgeInsets.fromLTRB(22, 18, 22, 28),
+          padding: EdgeInsets.fromLTRB(MediaQuery.sizeOf(context).width < 650 ? 10 : 22, 18, MediaQuery.sizeOf(context).width < 650 ? 10 : 22, 28),
           children: [
             _buildSummaryCards(all),
             const SizedBox(height: 16),
@@ -851,7 +851,11 @@ class _ServiceRequestListScreenState
 
   Widget _buildFilterPanel(List<ServiceRequestModel> requests) {
     InputDecoration dd(String label) => InputDecoration(labelText: label);
-    return Container(
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final compact = constraints.maxWidth < 650;
+        final fieldWidth = compact ? constraints.maxWidth - 28 : null;
+        return Container(
       padding: const EdgeInsets.all(14),
       decoration: _panelDecoration(),
       child: Column(
@@ -861,7 +865,7 @@ class _ServiceRequestListScreenState
             runSpacing: 10,
             crossAxisAlignment: WrapCrossAlignment.center,
             children: [
-              SizedBox(width: 300, child: TextField(
+              SizedBox(width: fieldWidth ?? 300, child: TextField(
                 controller: _searchController,
                 onChanged: (_) => setState(() => _page = 0),
                 decoration: const InputDecoration(
@@ -869,7 +873,7 @@ class _ServiceRequestListScreenState
                   prefixIcon: Icon(Icons.search),
                 ),
               )),
-              SizedBox(width: 175, child: DropdownButtonFormField<ServiceRequestType?>(
+              SizedBox(width: fieldWidth ?? 175, child: DropdownButtonFormField<ServiceRequestType?>(
                 isExpanded: true,
                 initialValue: _selectedType,
                 decoration: dd('Servis Türü'),
@@ -880,7 +884,7 @@ class _ServiceRequestListScreenState
                 onChanged: (value) => setState(() { _selectedType = value; _page = 0; }),
               )),
               if (widget.role != AppRole.technician)
-                SizedBox(width: 210, child: DropdownButtonFormField<String?>(
+                SizedBox(width: fieldWidth ?? 210, child: DropdownButtonFormField<String?>(
                   isExpanded: true,
                   initialValue: _selectedTechnicianId,
                   decoration: dd('Teknisyen'),
@@ -890,7 +894,7 @@ class _ServiceRequestListScreenState
                   ],
                   onChanged: (value) => setState(() { _selectedTechnicianId = value; _page = 0; }),
                 )),
-              SizedBox(width: 245, child: OutlinedButton.icon(
+              SizedBox(width: fieldWidth ?? 245, child: OutlinedButton.icon(
                 onPressed: _pickDateRange,
                 icon: const Icon(Icons.calendar_today_outlined, size: 18),
                 label: Align(alignment: Alignment.centerLeft, child: Text(
@@ -911,6 +915,8 @@ class _ServiceRequestListScreenState
         ],
       ),
     );
+      },
+    );
   }
 
   Widget _buildLocationDistribution(List<ServiceRequestModel> requests) {
@@ -923,14 +929,10 @@ class _ServiceRequestListScreenState
     final cities = <String>[...preferred.where((c) => counts.containsKey(c))];
     for (final c in counts.keys) { if (!cities.contains(c) && cities.length < 4) cities.add(c); }
     if (cities.isEmpty) return const SizedBox.shrink();
-    return Container(
-      padding: const EdgeInsets.fromLTRB(14, 10, 14, 12),
-      decoration: _panelDecoration(),
-      child: Row(
-        children: [
-          const Text('Lokasyona Göre Dağılım', style: TextStyle(fontWeight: FontWeight.w800, color: Color(0xFF526277))),
-          const SizedBox(width: 16),
-          Expanded(child: Wrap(
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final compact = constraints.maxWidth < 650;
+        final chips = Wrap(
             spacing: 10,
             runSpacing: 8,
             children: cities.map((city) {
@@ -954,9 +956,28 @@ class _ServiceRequestListScreenState
                 ),
               );
             }).toList(),
-          )),
-        ],
-      ),
+          );
+        return Container(
+          padding: const EdgeInsets.fromLTRB(14, 10, 14, 12),
+          decoration: _panelDecoration(),
+          child: compact
+              ? Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text('Lokasyona Göre Dağılım', style: TextStyle(fontWeight: FontWeight.w800, color: Color(0xFF526277))),
+                    const SizedBox(height: 10),
+                    chips,
+                  ],
+                )
+              : Row(
+                  children: [
+                    const Text('Lokasyona Göre Dağılım', style: TextStyle(fontWeight: FontWeight.w800, color: Color(0xFF526277))),
+                    const SizedBox(width: 16),
+                    Expanded(child: chips),
+                  ],
+                ),
+        );
+      },
     );
   }
 
@@ -1158,6 +1179,12 @@ class _ServiceRequestListScreenState
     for (final item in request.items) {
       final name = item.productName.trim();
       if (name.isNotEmpty && !names.contains(name)) names.add(name);
+    }
+    if (names.isEmpty && request.plannedItems.isNotEmpty) {
+      for (final item in request.plannedItems) {
+        final name = item['product_name']?.toString().trim() ?? '';
+        if (name.isNotEmpty && !names.contains(name)) names.add(name);
+      }
     }
     if (names.isEmpty && request.plannedProductName.trim().isNotEmpty) {
       names.add(request.plannedProductName.trim());

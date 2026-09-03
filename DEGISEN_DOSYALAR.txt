@@ -1,0 +1,24 @@
+MOTUS V70 - YANDEX APK/iOS ROTA HTTPS FIX
+
+ASIL SEBEP:
+Önceki native mobil akış yandexmaps:// custom scheme ile
+rtext=~HEDEF1~HEDEF2 biçiminde boş başlangıç gönderiyordu.
+Yandex Maps native uygulaması bu boş başlangıcı her cihaz/sürümde
+rota olarak kabul etmeyebiliyor; sonuçta uygulama açılıyor fakat
+yalnız harita ekranı kalıyordu.
+
+BU PATCH:
+- Android APK ve iOS native'de çalışan web/PWA route formatını aynen kullanır.
+- Başlangıç artık boş değildir.
+- MOTUS cihazın gerçek GPS koordinatını ilk nokta olarak gönderir:
+  GPS_LAT,GPS_LON~MUSTERI1_LAT,LON~MUSTERI2_LAT,LON...
+- Yandex HTTPS route linki external application olarak açılır.
+- Yandex app-link destekliyorsa direkt Yandex Maps'e geçer; değilse tarayıcıda
+  aynı hazır rota açılır.
+- Mevcut rota sırası, adres çözümleme, bölge/ilçe gösterimi korunur.
+
+SQL YOK.
+
+TEST:
+Yeni APK -> Tekniker -> Günlük İşler -> Rota Oluştur
+Yandex'te "Nereye: X yer" görünmeli ve rota çizilmiş olmalı.

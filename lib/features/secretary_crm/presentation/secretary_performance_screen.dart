@@ -10,8 +10,14 @@ class SecretaryPerformanceScreen extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final countsFuture = ref.read(secretaryCrmRepositoryProvider).counts();
-    final perfFuture = ref.read(secretaryCrmRepositoryProvider).todayServicePerformance();
+    final countsFuture = ref
+        .read(secretaryCrmRepositoryProvider)
+        .counts()
+        .timeout(const Duration(seconds: 12));
+    final perfFuture = ref
+        .read(secretaryCrmRepositoryProvider)
+        .todayServicePerformance()
+        .timeout(const Duration(seconds: 12));
     return ManagementShell(
       role: AppRole.secretary,
       title: 'Raporlar • Performansım',
@@ -19,7 +25,17 @@ class SecretaryPerformanceScreen extends ConsumerWidget {
       child: FutureBuilder(
         future: Future.wait([countsFuture, perfFuture]),
         builder: (context, snapshot) {
-          if (!snapshot.hasData) return const Center(child: CircularProgressIndicator());
+          if (snapshot.connectionState == ConnectionState.waiting && !snapshot.hasData) {
+            return const Center(child: CircularProgressIndicator());
+          }
+          if (snapshot.hasError) {
+            return const Center(
+              child: Text(
+                'Performans verileri zamanında yüklenemedi.\nSol menüden tekrar açarak yeniden deneyin.',
+                textAlign: TextAlign.center,
+              ),
+            );
+          }
           final counts = snapshot.data![0] as dynamic;
           final perf = snapshot.data![1] as Map<String, num>;
           final cards = <(String, String, IconData, Color)>[

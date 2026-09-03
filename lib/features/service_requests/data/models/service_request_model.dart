@@ -205,6 +205,7 @@ class ServiceRequestModel {
     this.plannedProductName = '',
     this.plannedQuantity = 0,
     this.plannedUnitPrice = 0,
+    this.plannedItems = const <Map<String, dynamic>>[],
     this.completionNote = '',
     this.items = const [],
     this.technicianNameSnapshot = '',
@@ -245,6 +246,7 @@ class ServiceRequestModel {
   final String plannedProductName;
   final double plannedQuantity;
   final double plannedUnitPrice;
+  final List<Map<String, dynamic>> plannedItems;
   final String completionNote;
   final List<ServiceRequestItem> items;
   final String technicianNameSnapshot;
@@ -296,6 +298,7 @@ class ServiceRequestModel {
     String? plannedProductName,
     double? plannedQuantity,
     double? plannedUnitPrice,
+    List<Map<String, dynamic>>? plannedItems,
     String? completionNote,
     List<ServiceRequestItem>? items,
     String? technicianNameSnapshot,
@@ -337,6 +340,7 @@ class ServiceRequestModel {
       plannedProductName: plannedProductName ?? this.plannedProductName,
       plannedQuantity: plannedQuantity ?? this.plannedQuantity,
       plannedUnitPrice: plannedUnitPrice ?? this.plannedUnitPrice,
+      plannedItems: plannedItems ?? this.plannedItems,
       completionNote: completionNote ?? this.completionNote,
       items: items ?? this.items,
       technicianNameSnapshot:
@@ -384,6 +388,12 @@ class ServiceRequestModel {
       plannedProductName: map['planned_product_name']?.toString() ?? '',
       plannedQuantity: (map['planned_quantity'] as num?)?.toDouble() ?? 0,
       plannedUnitPrice: (map['planned_unit_price'] as num?)?.toDouble() ?? 0,
+      plannedItems: map['planned_items'] is List
+          ? (map['planned_items'] as List)
+              .whereType<Map>()
+              .map((item) => Map<String, dynamic>.from(item))
+              .toList(growable: false)
+          : const <Map<String, dynamic>>[],
       completionNote: map['completion_note']?.toString() ?? '',
       technicianNameSnapshot:
           map['assigned_technician_name_snapshot']?.toString() ?? '',
@@ -430,6 +440,7 @@ class ServiceRequestModel {
       'planned_product_name': plannedProductName.trim(),
       'planned_quantity': plannedQuantity,
       'planned_unit_price': plannedUnitPrice,
+      'planned_items': plannedItems,
       'completion_note': completionNote.trim(),
       'route_order': routeOrder,
       'route_plan_date': routePlanDate == null

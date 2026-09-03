@@ -16,6 +16,7 @@ class TechnicianJob {
     this.plannedProductName = '',
     this.plannedQuantity = 0,
     this.plannedUnitPrice = 0,
+    this.plannedItems = const <Map<String, dynamic>>[],
     this.secretaryName = '',
     this.completionNote = '',
     this.latitude,
@@ -48,6 +49,7 @@ class TechnicianJob {
   final String plannedProductName;
   final double plannedQuantity;
   final double plannedUnitPrice;
+  final List<Map<String, dynamic>> plannedItems;
   final String secretaryName;
   final String completionNote;
   final double? latitude;
@@ -132,6 +134,12 @@ class TechnicianJob {
       plannedProductName: map['planned_product_name']?.toString() ?? '',
       plannedQuantity: (map['planned_quantity'] as num?)?.toDouble() ?? 0,
       plannedUnitPrice: (map['planned_unit_price'] as num?)?.toDouble() ?? 0,
+      plannedItems: map['planned_items'] is List
+          ? (map['planned_items'] as List)
+              .whereType<Map>()
+              .map((item) => Map<String, dynamic>.from(item))
+              .toList(growable: false)
+          : const <Map<String, dynamic>>[],
       secretaryName: map['secretary_name']?.toString() ?? '',
       completionNote: map['completion_note']?.toString() ?? '',
       latitude: customer['latitude'] is num
@@ -236,6 +244,7 @@ class ServiceExecutionRepository {
           .toList(growable: true);
 
       await _enrichCustomerLocations(rows);
+      await _enrichPlannedItems(rows);
       final jobs = rows
           .map(TechnicianJob.fromMap)
           .where((job) => const {'assigned', 'in_progress'}.contains(job.status))
@@ -272,6 +281,32 @@ class ServiceExecutionRepository {
     final jobs = rows.map(TechnicianJob.fromMap).toList(growable: true);
     _sortJobs(jobs);
     return jobs;
+  }
+
+  Future<void> _enrichPlannedItems(List<Map<String, dynamic>> rows) async {
+    final ids = rows
+        .map((row) => row['id']?.toString() ?? '')
+        .where((id) => id.isNotEmpty)
+        .toSet()
+        .toList(growable: false);
+    if (ids.isEmpty) return;
+    try {
+      final plannedRows = List<Map<String, dynamic>>.from(
+        await _client
+            .from('service_requests')
+            .select('id, planned_items')
+            .inFilter('id', ids),
+      );
+      final byId = <String, dynamic>{
+        for (final item in plannedRows) item['id'].toString(): item['planned_items'],
+      };
+      for (final row in rows) {
+        final id = row['id']?.toString() ?? '';
+        if (byId.containsKey(id)) row['planned_items'] = byId[id];
+      }
+    } catch (_) {
+      // V62 SQL henüz uygulanmadıysa eski tek ürün alanlarıyla devam eder.
+    }
   }
 
   void _sortJobs(List<TechnicianJob> jobs) {
@@ -430,6 +465,40 @@ class ServiceExecutionRepository {
         .maybeSingle();
     if (row == null) return null;
     final data = Map<String, dynamic>.from(row);
+
+    // Tekniker hesabında service_requests satırı görünürken nested customers
+    // ilişkisi RLS nedeniyle boş dönebiliyor. Bu durumda PDF ve servis ekranında
+    // müşteri adı / telefon / adres '-' görünüyordu. Uygulamada zaten kullanılan
+    // SECURITY DEFINER müşteri kartı RPC'si ile aynı müşteriyi güvenli biçimde
+    // zenginleştiriyoruz. Bu RPC yalnız teknisyene atanmış müşteriyi döndürür ve
+    // tamamlanmış işlerde de atama kaydı korunduğu için PDF paylaşımında çalışır.
+    final nestedCustomer = data['customers'];
+    final nestedMap = nestedCustomer is Map
+        ? Map<String, dynamic>.from(nestedCustomer)
+        : <String, dynamic>{};
+    final nestedHasIdentity =
+        (nestedMap['full_name']?.toString().trim().isNotEmpty ?? false) ||
+        (nestedMap['company_name']?.toString().trim().isNotEmpty ?? false) ||
+        (nestedMap['phone']?.toString().trim().isNotEmpty ?? false) ||
+        (nestedMap['address']?.toString().trim().isNotEmpty ?? false);
+    if (!nestedHasIdentity) {
+      final customerId = data['customer_id']?.toString().trim() ?? '';
+      if (customerId.isNotEmpty) {
+        try {
+          final customer = await _client.rpc(
+            'technician_customer_card_v1',
+            params: {'p_customer_id': customerId},
+          );
+          if (customer is Map) {
+            data['customers'] = Map<String, dynamic>.from(customer);
+          }
+        } catch (_) {
+          // Eski kurulumda RPC yoksa mevcut nested veri ile devam et.
+          // PDF yine üretilebilir; yalnızca müşteri bilgisi yoksa '-' görünür.
+        }
+      }
+    }
+
     final creatorId = data['created_by']?.toString();
     if (creatorId?.isNotEmpty == true) {
       final profile = await _client
@@ -517,6 +586,8 @@ class ServiceExecutionRepository {
     required double extraAmount,
     required double collectedAmount,
     required String paymentMethod,
+    int cardInstallments = 1,
+    double cardCommissionRate = 0,
     required List<Map<String, dynamic>> items,
   }) async {
     final params = {
@@ -544,6 +615,24 @@ class ServiceExecutionRepository {
       // servisleri çalıştırmaya devam eder. Araç stoğunu eksiye düşürme özelliği
       // için SUPABASE_V5_TEKNIKER_FINAL.sql kurulmalıdır.
       await _client.rpc('complete_service_v5', params: params);
+    }
+
+    // V60: Kart tahsilatında taksit/komisyon bilgisi servis kapatma RPC'sini
+    // değiştirmeden payments kaydına eklenir. SQL henüz kurulmadıysa ana servis
+    // akışı bozulmaz; sadece kart detayı atlanır.
+    if (paymentMethod == 'card') {
+      try {
+        final commissionAmount = collectedAmount * (cardCommissionRate / 100);
+        await _client
+            .from('payments')
+            .update({
+              'card_installments': cardInstallments < 1 ? 1 : cardInstallments,
+              'card_commission_rate': cardCommissionRate,
+              'card_commission_amount': commissionAmount,
+              'net_amount': collectedAmount - commissionAmount,
+            })
+            .eq('service_request_id', serviceRequestId);
+      } catch (_) {}
     }
   }
 

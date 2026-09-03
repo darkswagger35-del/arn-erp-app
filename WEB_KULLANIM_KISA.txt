@@ -1,0 +1,13 @@
+MOTUS WEB - KISA KULLANIM
+
+1) Klasoru C:\arn-erp-app olarak ac.
+2) WEB_CALISTIR.bat dosyasina cift tikla.
+3) Chrome acilinca mevcut MOTUS kullanici e-posta/kullanici adi + sifresiyle gir.
+
+Windows ve Web AYNI Supabase verisini kullanir.
+PC'den olusturdugun sekreter/tekniker webden kendi rolundeki ayni profile girer.
+
+Yayina hazir build icin WEB_BUILD.bat dosyasina cift tikla.
+Olusan klasor: build\web
+
+Google ile giris domain yayinlandiktan sonra eklenecek; OAuth redirect adresi gercek alan adina baglanacak.

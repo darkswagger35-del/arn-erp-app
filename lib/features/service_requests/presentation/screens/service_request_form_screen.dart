@@ -13,6 +13,22 @@ import '../providers/service_request_providers.dart';
 import '../../../settings/data/company_app_settings.dart';
 import '../../../customers/presentation/screens/customer_module_shell.dart';
 
+
+class _ExtraProductLine {
+  _ExtraProductLine()
+      : quantityController = TextEditingController(text: '1'),
+        priceController = TextEditingController();
+
+  String? productId;
+  final TextEditingController quantityController;
+  final TextEditingController priceController;
+
+  void dispose() {
+    quantityController.dispose();
+    priceController.dispose();
+  }
+}
+
 class ServiceRequestFormScreen extends ConsumerStatefulWidget {
   const ServiceRequestFormScreen({
     super.key,
@@ -52,6 +68,7 @@ class _ServiceRequestFormScreenState
   String? _selectedProductId;
   double _selectedProductPrice = 0;
   final _quantityController = TextEditingController(text: '1');
+  final List<_ExtraProductLine> _extraProductLines = <_ExtraProductLine>[];
   List<String> _enabledServiceTypes = ServiceRequestType.values
       .map((type) => type.value)
       .toList(growable: false);
@@ -75,6 +92,9 @@ class _ServiceRequestFormScreenState
     _descriptionController.dispose();
     _priceController.dispose();
     _quantityController.dispose();
+    for (final line in _extraProductLines) {
+      line.dispose();
+    }
     _customerNameController.dispose();
     _customerPhoneController.dispose();
     _cityController.dispose();
@@ -293,6 +313,10 @@ class _ServiceRequestFormScreenState
         _selectedProductPrice = 0;
         _quantityController.text = '1';
         _priceController.text = '0';
+        for (final line in _extraProductLines) {
+          line.dispose();
+        }
+        _extraProductLines.clear();
       } else if (!previouslyNeededProduct) {
         _selectedProductId = null;
         _selectedProductPrice = 0;
@@ -364,6 +388,7 @@ class _ServiceRequestFormScreenState
                     keyboardType:
                         const TextInputType.numberWithOptions(decimal: true),
                     decoration: const InputDecoration(labelText: 'Adet *'),
+                    onChanged: (_) => setState(() {}),
                     validator: (value) =>
                         (double.tryParse((value ?? '').replaceAll(',', '.')) ?? 0) <= 0
                             ? 'Geçerli adet girin.'
@@ -381,6 +406,7 @@ class _ServiceRequestFormScreenState
                       labelText: 'Toplam Fiyat *',
                       prefixText: '₺ ',
                     ),
+                    onChanged: (_) => setState(() {}),
                     validator: (value) {
                       final price = double.tryParse((value ?? '')
                           .trim()
@@ -390,6 +416,32 @@ class _ServiceRequestFormScreenState
                           ? 'Geçerli fiyat girin.'
                           : null;
                     },
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            for (var index = 0; index < _extraProductLines.length; index++) ...[
+              _extraProductLineCard(index, _extraProductLines[index], saving),
+              const SizedBox(height: 10),
+            ],
+            Row(
+              children: [
+                OutlinedButton.icon(
+                  onPressed: saving
+                      ? null
+                      : () => setState(() {
+                            _extraProductLines.add(_ExtraProductLine());
+                          }),
+                  icon: const Icon(Icons.add_rounded),
+                  label: const Text('Ürün Ekle'),
+                ),
+                const Spacer(),
+                Text(
+                  'Genel Toplam: ${NumberFormat.currency(locale: 'tr_TR', symbol: '₺').format(_plannedProductsTotal())}',
+                  style: const TextStyle(
+                    fontWeight: FontWeight.w900,
+                    color: Color(0xFF0797A9),
                   ),
                 ),
               ],
@@ -522,6 +574,179 @@ class _ServiceRequestFormScreenState
         ],
       ),
     );
+  }
+
+  Widget _extraProductLineCard(
+    int index,
+    _ExtraProductLine line,
+    bool saving,
+  ) {
+    Map<String, dynamic>? selected;
+    if (line.productId != null) {
+      for (final product in _products) {
+        if (product['id'].toString() == line.productId) {
+          selected = product;
+          break;
+        }
+      }
+    }
+
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: const Color(0xFFF8FBFC),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: const Color(0xFFD9E8EC)),
+      ),
+      child: Column(
+        children: [
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  '${index + 2}. Ürün',
+                  style: const TextStyle(fontWeight: FontWeight.w900),
+                ),
+              ),
+              IconButton(
+                tooltip: 'Ürünü kaldır',
+                onPressed: saving
+                    ? null
+                    : () => setState(() {
+                          final removed = _extraProductLines.removeAt(index);
+                          removed.dispose();
+                        }),
+                icon: const Icon(Icons.delete_outline_rounded),
+              ),
+            ],
+          ),
+          DropdownButtonFormField<String>(
+            value: line.productId,
+            isExpanded: true,
+            decoration: const InputDecoration(labelText: 'Ürün / İşlem *'),
+            items: _products.map((product) {
+              final id = product['id'].toString();
+              final name = product['name']?.toString() ?? '-';
+              return DropdownMenuItem(value: id, child: Text(name));
+            }).toList(),
+            onChanged: saving
+                ? null
+                : (value) {
+                    Map<String, dynamic>? product;
+                    for (final item in _products) {
+                      if (item['id'].toString() == value) product = item;
+                    }
+                    setState(() {
+                      line.productId = value;
+                      final salePrice =
+                          (product?['sale_price'] as num?)?.toDouble() ?? 0;
+                      if (salePrice > 0) {
+                        line.priceController.text = salePrice.toStringAsFixed(0);
+                      }
+                    });
+                  },
+            validator: (value) => value == null ? 'Bir ürün seçin.' : null,
+          ),
+          const SizedBox(height: 10),
+          Row(
+            children: [
+              Expanded(
+                child: TextFormField(
+                  controller: line.quantityController,
+                  enabled: !saving,
+                  keyboardType:
+                      const TextInputType.numberWithOptions(decimal: true),
+                  decoration: const InputDecoration(labelText: 'Adet *'),
+                  onChanged: (_) => setState(() {}),
+                  validator: (value) =>
+                      (double.tryParse((value ?? '').replaceAll(',', '.')) ?? 0) <= 0
+                          ? 'Geçerli adet girin.'
+                          : null,
+                ),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: TextFormField(
+                  controller: line.priceController,
+                  enabled: !saving,
+                  keyboardType:
+                      const TextInputType.numberWithOptions(decimal: true),
+                  decoration: const InputDecoration(
+                    labelText: 'Toplam Fiyat *',
+                    prefixText: '₺ ',
+                  ),
+                  onChanged: (_) => setState(() {}),
+                  validator: (value) {
+                    final amount = _parseMoney(value ?? '');
+                    return amount <= 0 ? 'Geçerli fiyat girin.' : null;
+                  },
+                ),
+              ),
+            ],
+          ),
+          if (selected != null) const SizedBox.shrink(),
+        ],
+      ),
+    );
+  }
+
+  double _parseMoney(String value) {
+    return double.tryParse(
+          value.trim().replaceAll('.', '').replaceAll(',', '.'),
+        ) ??
+        0;
+  }
+
+  double _plannedProductsTotal() {
+    var total = _parseMoney(_priceController.text);
+    for (final line in _extraProductLines) {
+      total += _parseMoney(line.priceController.text);
+    }
+    return total;
+  }
+
+  List<Map<String, dynamic>> _plannedItemsPayload() {
+    final result = <Map<String, dynamic>>[];
+
+    void addItem(String? productId, String name, String qtyText, String priceText) {
+      if (productId == null || productId.isEmpty) return;
+      final quantity =
+          double.tryParse(qtyText.trim().replaceAll(',', '.')) ?? 0;
+      final lineTotal = _parseMoney(priceText);
+      if (quantity <= 0 || lineTotal <= 0) return;
+      result.add(<String, dynamic>{
+        'product_id': productId,
+        'product_name': name,
+        'quantity': quantity,
+        'unit_price': lineTotal / quantity,
+        'line_total': lineTotal,
+      });
+    }
+
+    addItem(
+      _selectedProductId,
+      _selectedProductName(),
+      _quantityController.text,
+      _priceController.text,
+    );
+
+    for (final line in _extraProductLines) {
+      var name = '';
+      for (final product in _products) {
+        if (product['id'].toString() == line.productId) {
+          name = product['name']?.toString() ?? '';
+          break;
+        }
+      }
+      addItem(
+        line.productId,
+        name,
+        line.quantityController.text,
+        line.priceController.text,
+      );
+    }
+
+    return result;
   }
 
   Widget _addressAndNotePanel(CustomerModel customer, bool saving) {
@@ -836,11 +1061,15 @@ class _ServiceRequestFormScreenState
       return;
     }
 
-    final normalizedPrice = _priceController.text
-        .trim()
-        .replaceAll('.', '')
-        .replaceAll(',', '.');
-    final price = double.tryParse(normalizedPrice) ?? 0;
+    final plannedItems = _needsPlannedProduct
+        ? _plannedItemsPayload()
+        : const <Map<String, dynamic>>[];
+    final price = _needsPlannedProduct
+        ? plannedItems.fold<double>(
+            0,
+            (sum, item) => sum + ((item['line_total'] as num?)?.toDouble() ?? 0),
+          )
+        : _parseMoney(_priceController.text);
 
     if (!_isSecretary && _appointmentMode == 'exact' && _plannedTime == null) {
       _showMessage('Net saat için randevu saatini seçin.');
@@ -893,7 +1122,10 @@ class _ServiceRequestFormScreenState
       plannedProductId: _needsPlannedProduct ? _selectedProductId : null,
       plannedProductName: _needsPlannedProduct ? _selectedProductName() : '',
       plannedQuantity: quantity,
-      plannedUnitPrice: _needsPlannedProduct && quantity > 0 ? price / quantity : 0,
+      plannedUnitPrice: _needsPlannedProduct && quantity > 0
+          ? _parseMoney(_priceController.text) / quantity
+          : 0,
+      plannedItems: plannedItems,
     );
 
     final success = await ref

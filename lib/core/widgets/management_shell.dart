@@ -367,6 +367,7 @@ class _ManagementSidebar extends ConsumerWidget {
     final technicianItems = <_SideItem>[
             _SideItem(Icons.dashboard_outlined, 'Ana Sayfa', dashboardRoute),
             const _SideItem(Icons.calendar_month_outlined, 'Günlük İşler', '/technician/jobs'),
+            const _SideItem(Icons.account_balance_wallet_outlined, 'Kasam', '/technician/cash'),
           ];
 
     final managerGroups = <_SideGroup>[
@@ -376,6 +377,7 @@ class _ManagementSidebar extends ConsumerWidget {
         children: const [
           _SideItem(Icons.assignment_outlined, 'Servis Talepleri', '/manager/service-requests'),
           _SideItem(Icons.location_on_outlined, 'Bölgeler & Rota', '/manager/dispatch'),
+          _SideItem(Icons.person_pin_circle_outlined, 'Tekniker Konumları', '/manager/technician-locations'),
           _SideItem(Icons.calendar_month_outlined, 'Takvim', '/manager/service-planning'),
           _SideItem(Icons.description_outlined, 'Servis Formları', '/manager/service-documents'),
           _SideItem(Icons.design_services_outlined, 'Form Tasarımcısı', '/manager/service-form-designer'),
@@ -395,6 +397,7 @@ class _ManagementSidebar extends ConsumerWidget {
         label: 'Finans & Raporlar',
         children: const [
           _SideItem(Icons.payments_outlined, 'Tahsilatlar', '/manager/payments'),
+          _SideItem(Icons.account_balance_wallet_outlined, 'Kasa', '/manager/cash'),
           _SideItem(Icons.assessment_outlined, 'Raporlar', '/manager/reports'),
         ],
       ),

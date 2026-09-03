@@ -1,0 +1,11 @@
+MOTUS WEB KULLANIMI
+
+1) WEB_CALISTIR.bat sadece gelistirme/test icindir.
+2) Sekreter ve teknikerlere ZIP veya BAT verilmeyecek.
+3) Final sistem internete bir kez yayinlanacak.
+4) Sonra herkes tarayicidan ayni adrese girecek, ornek:
+   https://app.motus.com
+5) Iki sekreter PC'sinde de sadece Chrome/Edge kisayolu yeterlidir.
+6) Teknikerler telefondan ayni adrese girer; isterlerse ana ekrana ekleyip uygulama gibi kullanir.
+7) Her kullanici kendi hesabi ile girer. Rol yetkileri Supabase'den gelir.
+8) Tum cihazlar ayni Supabase veritabanini kullanir; veri anlik ortaktir.

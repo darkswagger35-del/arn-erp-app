@@ -1,0 +1,11 @@
+MOTUS WEB YAYINLAMA - V47
+
+1) ZIP'i normal klasore cikartin.
+2) WEB_YAYINLA.bat dosyasina cift tiklayin.
+3) Ilk kullanimda Vercel girisi istenirse tarayicidan giris yapin.
+4) Islem tamamlaninca CMD ekraninda https://...vercel.app adresi gorunur.
+5) Bu adresi sekreter ve teknikerlere verebilirsiniz.
+
+Sonraki guncellemelerde yine WEB_YAYINLA.bat dosyasini calistirmak yeterlidir.
+
+Not: Node.js / npx bilgisayarda kurulu degilse BAT bunu soyleyip durur; pencere kapanmaz.

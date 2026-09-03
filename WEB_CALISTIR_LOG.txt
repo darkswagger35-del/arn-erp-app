@@ -1,0 +1,182 @@
+MOTUS WEB CALISTIRMA LOGU
+Tarih: �ar 26.08.2026 18:18:29,41
+Klasor: C:\arn-erp-app
+
+Flutter 3.44.8 • channel stable • https://github.com/flutter/flutter.git
+Framework • revision 058e0af2c2 (5 weeks ago) • 2026-07-23 10:56:21 -0700
+Engine • hash 13ffd72b2f9a5ca4db2a74ea52d5353ec2e8f939 (revision 0cd610717b) (1 months ago) • 2026-07-23 16:11:34.000Z
+Tools • Dart 3.12.2 • DevTools 2.57.0
+
+Web ayari: flutter config --enable-web ATLANDI (zaten etkin).
+Resolving dependencies...
+Downloading packages...
+  archive 3.6.1 (4.2.0 available)
+  code_assets 1.2.1 (2.0.0 available)
+  connectivity_plus 6.1.5 (7.3.1 available)
+  cross_file 0.3.5+4 (0.3.5+5 available)
+  dbus 0.7.14 (0.7.15 available)
+  file_picker 10.3.10 (12.1.1 available)
+  flutter_riverpod 2.6.1 (3.4.2 available)
+  flutter_secure_storage 9.2.4 (11.0.0 available)
+  flutter_secure_storage_linux 1.2.3 (3.0.2 available)
+  flutter_secure_storage_macos 3.1.3 (4.0.0 available)
+  flutter_secure_storage_platform_interface 1.1.2 (2.0.3 available)
+  flutter_secure_storage_web 1.2.1 (2.1.1 available)
+  flutter_secure_storage_windows 3.1.2 (4.2.2 available)
+  functions_client 2.6.4 (2.7.1 available)
+  geolocator 14.0.2 (14.0.3 available)
+  geolocator_linux 0.2.4 (0.2.6 available)
+  geolocator_platform_interface 4.2.8 (4.3.0 available)
+  go_router 14.8.1 (18.0.0 available)
+  gotrue 2.26.0 (2.27.2 available)
+  hooks 2.0.2 (2.2.0 available)
+  image 4.3.0 (4.9.2 available)
+  intl 0.20.2 (0.20.3 available)
+  jni 1.0.0 (1.0.3 available)
+  jni_flutter 1.0.1 (1.0.2 available)
+  js 0.6.7 (0.7.2 available)
+  matcher 0.12.19 (0.12.20 available)
+  material_color_utilities 0.13.0 (0.13.1 available)
+  meta 1.18.0 (1.19.0 available)
+  objective_c 9.4.1 (9.6.0 available)
+  package_config 2.2.0 (3.0.0 available)
+  package_info_plus 9.0.1 (10.2.1 available)
+  package_info_plus_platform_interface 3.2.1 (4.1.0 available)
+  pdf 3.12.0 (3.13.0 available)
+  postgrest 2.8.0 (2.9.1 available)
+  printing 5.14.3 (5.15.0 available)
+  qr 3.0.2 (4.0.0 available)
+  realtime_client 2.11.0 (2.13.0 available)
+  record_use 0.6.0 (1.1.1 available)
+  riverpod 2.6.1 (3.4.2 available)
+  storage_client 2.6.0 (2.8.0 available)
+  supabase 2.14.0 (2.16.1 available)
+  supabase_flutter 2.16.0 (2.17.2 available)
+  test_api 0.7.11 (0.7.13 available)
+  vector_math 2.2.0 (2.4.2 available)
+  vm_service 15.2.0 (15.3.0 available)
+  win32 5.15.0 (6.4.0 available)
+  xml 6.6.1 (7.0.1 available)
+Got dependencies!
+47 packages have newer versions incompatible with dependency constraints.
+Try `flutter pub outdated` for more information.
+
+===== FLUTTER RUN =====
+Launching lib\main.dart on Chrome in debug mode...
+Waiting for connection from debug service on Chrome...             73,1s
+
+Flutter run key commands.
+r Hot reload. 
+R Hot restart.
+h List all available interactive commands.
+d Detach (terminate "flutter run" but leave application running).
+c Clear the screen
+q Quit (terminate the application on the device).
+
+This app is linked to the debug service: ws://127.0.0.1:59189/AOTMQU0OLDM=/ws
+Debug service listening on ws://127.0.0.1:59189/AOTMQU0OLDM=/ws
+A Dart VM Service on Chrome is available at: http://127.0.0.1:59189/AOTMQU0OLDM=
+The Flutter DevTools debugger and profiler on Chrome is available at: http://127.0.0.1:59189/AOTMQU0OLDM=/devtools/?uri=ws://127.0.0.1:59189/AOTMQU0OLDM=/ws
+Starting application from main method in: org-dartlang-app:/web_entrypoint.dart.
+supabase.supabase_flutter: INFO: ***** Supabase init completed ***** 
+══╡ EXCEPTION CAUGHT BY FLUTTER FRAMEWORK ╞═════════════════════════════════════════════════════════
+The following assertion was thrown:
+ListTile background color or ink splashes may be invisible.
+The ListTile is wrapped in a DecoratedBox that has a background color. Because ListTile paints its
+background and ink splashes on the nearest Material ancestor, this DecoratedBox will hide those
+effects.
+To fix this, wrap the ListTile in its own Material widget, or remove the background color from the
+intermediate DecoratedBox.
+
+ListTile:
+  ListTile(dense: true, selectedColor: Color(alpha: 1.0000, red: 0.0000, green: 0.7216, blue: 0.7882, colorSpace: ColorSpace.sRGB), contentPadding: EdgeInsets.zero, onTap: Closure: () => void from: (...args) => context[property](...args))
+DecoratedBox: DecoratedBox(bg:
+    BoxDecoration(color: Color(alpha: 1.0000, red: 0.9765, green: 0.9882, blue: 0.9922, colorSpace: ColorSpace.sRGB), border: Border.all(BorderSide(color: Color(alpha: 0.2000, red: 0.0000, green: 0.7216, blue: 0.7882, colorSpace: ColorSpace.sRGB))), borderRadius: BorderRadius.circular(28.0),
+      boxShadow: [BoxShadow(Color(alpha: 0.3333, red: 0.0000, green:
+        0.0000, blue: 0.0000, colorSpace: ColorSpace.sRGB), Offset(0.0,
+        18.0), 45.0, 0.0, BlurStyle.normal)]
+      )
+  )
+════════════════════════════════════════════════════════════════════════════════════════════════════
+supabase.auth: INFO: Signing out user with scope: local 
+Another exception was thrown: ListTile background color or ink splashes may be invisible.
+Another exception was thrown: ListTile background color or ink splashes may be invisible.
+Another exception was thrown: ListTile background color or ink splashes may be invisible.
+Another exception was thrown: ListTile background color or ink splashes may be invisible.
+Another exception was thrown: ListTile background color or ink splashes may be invisible.
+Another exception was thrown: ListTile background color or ink splashes may be invisible.
+Another exception was thrown: ListTile background color or ink splashes may be invisible.
+Another exception was thrown: ListTile background color or ink splashes may be invisible.
+Another exception was thrown: ListTile background color or ink splashes may be invisible.
+Another exception was thrown: ListTile background color or ink splashes may be invisible.
+Another exception was thrown: ListTile background color or ink splashes may be invisible.
+Another exception was thrown: ListTile background color or ink splashes may be invisible.
+Another exception was thrown: ListTile background color or ink splashes may be invisible.
+Another exception was thrown: ListTile background color or ink splashes may be invisible.
+Another exception was thrown: ListTile background color or ink splashes may be invisible.
+Another exception was thrown: ListTile background color or ink splashes may be invisible.
+Another exception was thrown: ListTile background color or ink splashes may be invisible.
+Another exception was thrown: ListTile background color or ink splashes may be invisible.
+Another exception was thrown: ListTile background color or ink splashes may be invisible.
+Another exception was thrown: ListTile background color or ink splashes may be invisible.
+Another exception was thrown: ListTile background color or ink splashes may be invisible.
+Another exception was thrown: ListTile background color or ink splashes may be invisible.
+Another exception was thrown: ListTile background color or ink splashes may be invisible.
+Another exception was thrown: ListTile background color or ink splashes may be invisible.
+Another exception was thrown: ListTile background color or ink splashes may be invisible.
+Another exception was thrown: ListTile background color or ink splashes may be invisible.
+Another exception was thrown: ListTile background color or ink splashes may be invisible.
+Another exception was thrown: ListTile background color or ink splashes may be invisible.
+Another exception was thrown: ListTile background color or ink splashes may be invisible.
+Another exception was thrown: ListTile background color or ink splashes may be invisible.
+[CustomerRepository] operation=listCustomers entityId=aa60a640-10f2-45d9-9772-ec42cc2da300 userId=75e927ec-66e5-425e-9ce0-ff81a4787fd7 companyId=aa60a640-10f2-45d9-9772-ec42cc2da300 filters={repositoryCalled: true, search: , phone: , isActive: true, city: , district: , startDate: null, endDate: null, page: 1, pageSize: 25, role: admin}
+[CustomerRepository] operation=listCustomers entityId=aa60a640-10f2-45d9-9772-ec42cc2da300 resultCount=0
+Another exception was thrown: ListTile background color or ink splashes may be invisible.
+Another exception was thrown: ListTile background color or ink splashes may be invisible.
+Another exception was thrown: ListTile background color or ink splashes may be invisible.
+Another exception was thrown: ListTile background color or ink splashes may be invisible.
+Another exception was thrown: ListTile background color or ink splashes may be invisible.
+Another exception was thrown: ListTile background color or ink splashes may be invisible.
+Another exception was thrown: ListTile background color or ink splashes may be invisible.
+Another exception was thrown: ListTile background color or ink splashes may be invisible.
+Another exception was thrown: ListTile background color or ink splashes may be invisible.
+Another exception was thrown: ListTile background color or ink splashes may be invisible.
+Another exception was thrown: ListTile background color or ink splashes may be invisible.
+Another exception was thrown: ListTile background color or ink splashes may be invisible.
+Another exception was thrown: ListTile background color or ink splashes may be invisible.
+Another exception was thrown: ListTile background color or ink splashes may be invisible.
+Another exception was thrown: ListTile background color or ink splashes may be invisible.
+Another exception was thrown: ListTile background color or ink splashes may be invisible.
+Another exception was thrown: ListTile background color or ink splashes may be invisible.
+Another exception was thrown: ListTile background color or ink splashes may be invisible.
+Another exception was thrown: ListTile background color or ink splashes may be invisible.
+Another exception was thrown: ListTile background color or ink splashes may be invisible.
+Another exception was thrown: ListTile background color or ink splashes may be invisible.
+Another exception was thrown: ListTile background color or ink splashes may be invisible.
+Another exception was thrown: ListTile background color or ink splashes may be invisible.
+Another exception was thrown: ListTile background color or ink splashes may be invisible.
+Another exception was thrown: ListTile background color or ink splashes may be invisible.
+Another exception was thrown: ListTile background color or ink splashes may be invisible.
+Another exception was thrown: ListTile background color or ink splashes may be invisible.
+Another exception was thrown: ListTile background color or ink splashes may be invisible.
+Another exception was thrown: ListTile background color or ink splashes may be invisible.
+Another exception was thrown: ListTile background color or ink splashes may be invisible.
+Another exception was thrown: ListTile background color or ink splashes may be invisible.
+Another exception was thrown: ListTile background color or ink splashes may be invisible.
+Another exception was thrown: ListTile background color or ink splashes may be invisible.
+Another exception was thrown: ListTile background color or ink splashes may be invisible.
+Another exception was thrown: ListTile background color or ink splashes may be invisible.
+Another exception was thrown: ListTile background color or ink splashes may be invisible.
+Another exception was thrown: ListTile background color or ink splashes may be invisible.
+Another exception was thrown: ListTile background color or ink splashes may be invisible.
+Another exception was thrown: ListTile background color or ink splashes may be invisible.
+Another exception was thrown: ListTile background color or ink splashes may be invisible.
+Another exception was thrown: ListTile background color or ink splashes may be invisible.
+Another exception was thrown: ListTile background color or ink splashes may be invisible.
+Another exception was thrown: ListTile background color or ink splashes may be invisible.
+Another exception was thrown: ListTile background color or ink splashes may be invisible.
+Another exception was thrown: ListTile background color or ink splashes may be invisible.
+Another exception was thrown: ListTile background color or ink splashes may be invisible.
+Another exception was thrown: ListTile background color or ink splashes may be invisible.
+Another exception was thrown: ListTile background color or ink splashes may be invisible.
+Another exception was thrown: ListTile background color or ink splashes may be invisible.

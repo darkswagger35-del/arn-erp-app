@@ -130,6 +130,18 @@ class CompanyAppSettings {
     'require_product_for_filter_change': true,
     'require_payment_status': true,
     'allow_unassigned_service': true,
+    // V61: Kart komisyon oranlarını yalnız yönetici ayarlar. Tekniker yalnız
+    // taksit seçer; oran buradan otomatik okunur.
+    'card_commission_rates': <String, dynamic>{
+      '1': 0.0,
+      '2': 0.0,
+      '3': 0.0,
+      '4': 0.0,
+      '5': 0.0,
+      '6': 0.0,
+      '9': 0.0,
+      '12': 0.0,
+    },
   };
 
   static const Map<String, dynamic> defaultCustomerRules = {
@@ -210,6 +222,17 @@ class CompanyAppSettings {
 
   bool serviceRule(String key, {bool fallback = false}) =>
       _boolValue(serviceRules[key], fallback);
+
+  double cardCommissionRate(int installments) {
+    final raw = serviceRules['card_commission_rates'];
+    if (raw is Map) {
+      final value = raw[installments.toString()];
+      if (value is num) return value.toDouble().clamp(0, 100).toDouble();
+      final parsed = double.tryParse(value?.toString().replaceAll(',', '.') ?? '');
+      if (parsed != null) return parsed.clamp(0, 100).toDouble();
+    }
+    return 0;
+  }
 
   bool customerRule(String key, {bool fallback = false}) =>
       _boolValue(customerRules[key], fallback);

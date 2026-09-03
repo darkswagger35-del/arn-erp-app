@@ -1,6 +1,9 @@
+import 'dart:async';
+
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../../../core/auth/app_role.dart';
+import '../../../core/auth/quick_login_codec.dart';
 import '../../../core/errors/app_exception.dart';
 import '../../../models/user_profile.dart';
 import '../domain/create_user_request.dart';
@@ -20,21 +23,25 @@ class UserManagementRepositoryImpl implements UserManagementRepository {
 
   @override
   Future<List<UserManagementUser>> listUsers({bool includeArchived = true}) async {
-    final currentProfile = await _getCurrentProfile();
-    if (currentProfile == null) throw const AppException('Oturum doğrulanamadı.');
-
     try {
+      // V65: tek sorgu. RLS zaten yalnız aynı şirketin profillerini döndürür.
+      // Önce mevcut profili sonra kullanıcıları çekmek gereksiz bir ağ turuydu ve
+      // Kullanıcılar ekranındaki uzun spinner'ın ana nedenlerinden biriydi.
       dynamic query = _client
           .from('profiles')
-          .select('id, company_id, full_name, email, phone, username, role, is_active, deleted_at, last_sign_in_at, created_at, updated_at')
-          .eq('company_id', currentProfile.companyId);
+          .select('id, company_id, full_name, email, phone, username, role, is_active, deleted_at, last_sign_in_at, created_at, updated_at');
       if (!includeArchived) query = query.isFilter('deleted_at', null);
-      final rows = await query.order('deleted_at', ascending: true).order('full_name');
+      final rows = await query
+          .order('deleted_at', ascending: true)
+          .order('full_name')
+          .timeout(const Duration(seconds: 5));
       return (rows as List)
           .map((e) => UserManagementUser.fromJson(Map<String, dynamic>.from(e as Map)))
           .toList(growable: false);
     } on PostgrestException catch (e) {
       throw AppException(e.message);
+    } on TimeoutException {
+      throw const AppException('Kullanıcı listesi 5 saniyede alınamadı. Yenile ile tekrar deneyin.');
     }
   }
 
@@ -46,8 +53,8 @@ class UserManagementRepositoryImpl implements UserManagementRepository {
       'username': request.username,
       'phone': request.phone,
       'role': request.role.value,
-      'password': request.password,
-      'password_confirmation': request.passwordConfirmation,
+      'password': encodeQuickPassword(request.password),
+      'password_confirmation': encodeQuickPassword(request.passwordConfirmation),
       'is_active': request.isActive,
     });
     final data = _normalize(payload);
@@ -134,7 +141,7 @@ class UserManagementRepositoryImpl implements UserManagementRepository {
   Future<void> setUserPassword({required String userId, required String password}) async {
     final data = _normalize(await _invokeFunction('set-company-user-password', body: {
       'user_id': userId,
-      'password': password,
+      'password': encodeQuickPassword(password),
     }));
     if (data['success'] != true) throw AppException(data['message']?.toString() ?? 'Şifre güncellenemedi.');
   }

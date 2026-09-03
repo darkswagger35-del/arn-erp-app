@@ -282,6 +282,48 @@ class _CustomerListScreenState extends ConsumerState<CustomerListScreen> {
 
   static int _trCompare(String a, String b) => a.toLowerCase().compareTo(b.toLowerCase());
 
+  Future<void> _confirmToggleActive(CustomerModel customer) async {
+    final next = !customer.isActive;
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text(next ? 'Müşteriyi Aktif Yap' : 'Müşteriyi Pasife Al'),
+        content: Text('${customer.displayName} ${next ? 'aktif' : 'pasif'} duruma alınsın mı?'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Vazgeç')),
+          FilledButton(onPressed: () => Navigator.pop(context, true), child: Text(next ? 'Aktif Yap' : 'Pasife Al')),
+        ],
+      ),
+    );
+    if (ok != true || customer.id == null) return;
+    await ref.read(customerControllerProvider).toggleActive(customer.id!, next);
+    if (!mounted) return;
+    await _refreshAll();
+  }
+
+  Future<void> _confirmDeleteCustomer(CustomerModel customer) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Müşteriyi Sil'),
+        content: Text('${customer.displayName} ve bu müşteriye bağlı kayıtlar kalıcı olarak silinecek. Devam edilsin mi?'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Vazgeç')),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: Colors.red),
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Kalıcı Sil'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true || customer.id == null) return;
+    await ref.read(customerControllerProvider).deleteCustomer(customer.id!);
+    if (!mounted) return;
+    setState(() => _selectedCustomer = null);
+    await _refreshAll();
+  }
+
   @override
   Widget build(BuildContext context) {
     final state = ref.watch(customerControllerProvider).state;
@@ -302,6 +344,8 @@ class _CustomerListScreenState extends ConsumerState<CustomerListScreen> {
         (widget.role == AppRole.secretary
             ? appSettings.permission('secretary_create_service', fallback: true)
             : appSettings.permission('technician_create_service'));
+    final canAdminManageCustomer =
+        widget.role == AppRole.admin || widget.role == AppRole.manager;
 
     return CustomerModuleShell(
       role: widget.role,
@@ -393,6 +437,9 @@ class _CustomerListScreenState extends ConsumerState<CustomerListScreen> {
                         onOpen: (customer) => context.go('${_prefix()}/customers/${customer.id}'),
                         onEdit: (customer) => context.go('${_prefix()}/customers/${customer.id}/edit'),
                         onService: (customer) => context.go('${_prefix()}/service-requests/new/${customer.id}'),
+                        canAdminManage: canAdminManageCustomer,
+                        onToggleActive: _confirmToggleActive,
+                        onDelete: _confirmDeleteCustomer,
                         onPreviousPage: state.page > 1 ? () => _goToPage(state.page - 1) : null,
                         onNextPage: state.hasMore ? () => _goToPage(state.page + 1) : null,
                       );
@@ -409,6 +456,9 @@ class _CustomerListScreenState extends ConsumerState<CustomerListScreen> {
                               onOpen: (customer) => context.go('${_prefix()}/customers/${customer.id}'),
                               onEdit: (customer) => context.go('${_prefix()}/customers/${customer.id}/edit'),
                               onService: (customer) => context.go('${_prefix()}/service-requests/new/${customer.id}'),
+                              canAdminManage: canAdminManageCustomer,
+                              onToggleActive: _confirmToggleActive,
+                              onDelete: _confirmDeleteCustomer,
                             ),
                           ],
                         );
@@ -428,6 +478,9 @@ class _CustomerListScreenState extends ConsumerState<CustomerListScreen> {
                               onOpen: (customer) => context.go('${_prefix()}/customers/${customer.id}'),
                               onEdit: (customer) => context.go('${_prefix()}/customers/${customer.id}/edit'),
                               onService: (customer) => context.go('${_prefix()}/service-requests/new/${customer.id}'),
+                              canAdminManage: canAdminManageCustomer,
+                              onToggleActive: _confirmToggleActive,
+                              onDelete: _confirmDeleteCustomer,
                             ),
                           ),
                         ],
@@ -685,6 +738,9 @@ class _CustomerListPanel extends StatelessWidget {
     required this.onOpen,
     required this.onEdit,
     required this.onService,
+    required this.canAdminManage,
+    required this.onToggleActive,
+    required this.onDelete,
     required this.onPreviousPage,
     required this.onNextPage,
   });
@@ -697,6 +753,9 @@ class _CustomerListPanel extends StatelessWidget {
   final ValueChanged<CustomerModel> onOpen;
   final ValueChanged<CustomerModel> onEdit;
   final ValueChanged<CustomerModel> onService;
+  final bool canAdminManage;
+  final ValueChanged<CustomerModel> onToggleActive;
+  final ValueChanged<CustomerModel> onDelete;
   final VoidCallback? onPreviousPage;
   final VoidCallback? onNextPage;
 
@@ -785,6 +844,9 @@ class _CustomerListPanel extends StatelessWidget {
               onOpen: onOpen,
               onEdit: onEdit,
               onService: onService,
+              canAdminManage: canAdminManage,
+              onToggleActive: onToggleActive,
+              onDelete: onDelete,
             ),
           const Divider(height: 1),
           Padding(
@@ -819,6 +881,9 @@ class _CustomerTable extends StatelessWidget {
     required this.onOpen,
     required this.onEdit,
     required this.onService,
+    required this.canAdminManage,
+    required this.onToggleActive,
+    required this.onDelete,
   });
 
   final List<CustomerModel> customers;
@@ -829,6 +894,9 @@ class _CustomerTable extends StatelessWidget {
   final ValueChanged<CustomerModel> onOpen;
   final ValueChanged<CustomerModel> onEdit;
   final ValueChanged<CustomerModel> onService;
+  final bool canAdminManage;
+  final ValueChanged<CustomerModel> onToggleActive;
+  final ValueChanged<CustomerModel> onDelete;
 
   @override
   Widget build(BuildContext context) {
@@ -914,10 +982,14 @@ class _CustomerTable extends StatelessWidget {
                               onSelected: (value) {
                                 if (value == 'edit') onEdit(customer);
                                 if (value == 'service') onService(customer);
+                                if (value == 'toggle') onToggleActive(customer);
+                                if (value == 'delete') onDelete(customer);
                               },
                               itemBuilder: (context) => <PopupMenuEntry<String>>[
                                 const PopupMenuItem<String>(value: 'edit', child: Text('Düzenle')),
                                 if (canCreateService) const PopupMenuItem<String>(value: 'service', child: Text('Servis Aç')),
+                                if (canAdminManage) PopupMenuItem<String>(value: 'toggle', child: Text(customer.isActive ? 'Pasife Al' : 'Aktif Yap')),
+                                if (canAdminManage) const PopupMenuItem<String>(value: 'delete', child: Text('Sil', style: TextStyle(color: Colors.red))),
                               ],
                             )
                           else if (canCreateService)
@@ -944,6 +1016,9 @@ class _CustomerPreview extends StatefulWidget {
     required this.onOpen,
     required this.onEdit,
     required this.onService,
+    required this.canAdminManage,
+    required this.onToggleActive,
+    required this.onDelete,
   });
 
   final CustomerModel? customer;
@@ -952,6 +1027,9 @@ class _CustomerPreview extends StatefulWidget {
   final ValueChanged<CustomerModel> onOpen;
   final ValueChanged<CustomerModel> onEdit;
   final ValueChanged<CustomerModel> onService;
+  final bool canAdminManage;
+  final ValueChanged<CustomerModel> onToggleActive;
+  final ValueChanged<CustomerModel> onDelete;
 
   @override
   State<_CustomerPreview> createState() => _CustomerPreviewState();
@@ -1159,6 +1237,19 @@ class _CustomerPreviewState extends State<_CustomerPreview> {
                         onPressed: () => widget.onService(customer),
                         icon: const Icon(Icons.handyman_outlined, size: 17),
                         label: const Text('Servis Aç'),
+                      ),
+                    if (widget.canAdminManage)
+                      OutlinedButton.icon(
+                        onPressed: () => widget.onToggleActive(customer),
+                        icon: Icon(customer.isActive ? Icons.pause_circle_outline : Icons.play_circle_outline, size: 17),
+                        label: Text(customer.isActive ? 'Pasife Al' : 'Aktif Yap'),
+                      ),
+                    if (widget.canAdminManage)
+                      OutlinedButton.icon(
+                        style: OutlinedButton.styleFrom(foregroundColor: Colors.red),
+                        onPressed: () => widget.onDelete(customer),
+                        icon: const Icon(Icons.delete_outline, size: 17),
+                        label: const Text('Sil'),
                       ),
                   ],
                 ),

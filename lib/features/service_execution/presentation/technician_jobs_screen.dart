@@ -1,19 +1,23 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io';
 import 'dart:math' as math;
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:geolocator/geolocator.dart';
+import 'package:http/http.dart' as http;
 import 'package:intl/intl.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:url_launcher/url_launcher.dart';
-import 'package:webview_windows/webview_windows.dart';
 
 import '../../../core/auth/app_role.dart';
+import '../../../core/platform/platform_info.dart';
+import '../../../core/platform/yandex_webview.dart';
 import '../../../core/auth/auth_provider.dart';
 import '../../../core/widgets/management_shell.dart';
+import '../../location_tracking/data/technician_location_tracking_controller.dart';
 import '../../settings/data/company_app_settings.dart';
 import '../data/service_execution_providers.dart';
 import '../data/service_execution_repository.dart';
@@ -48,6 +52,12 @@ class _TechnicianJobsScreenState extends ConsumerState<TechnicianJobsScreen> {
   Set<String> _invalidAddressJobIds = <String>{};
   Map<String, String> _invalidAddressResolvedText = <String, String>{};
 
+  // Yandex Geocoder sonucu yalnızca bu ekran oturumu boyunca bellekte tutulur.
+  // Koordinatlar veritabanına yazılmaz; aynı adrese tekrar tekrar API isteği
+  // atılmasını önler ve ücretsiz kotayı korur.
+  final Map<String, ({double lat, double lon, String label})>
+      _yandexPointCache =
+      <String, ({double lat, double lon, String label})>{};
 
   static const _cannotAttendReasons = <String>[
     'Müşteri ulaşılmadı',
@@ -58,11 +68,29 @@ class _TechnicianJobsScreenState extends ConsumerState<TechnicianJobsScreen> {
     'Diğer',
   ];
 
+  // V57: 1921 Sok. yalnız yönetici dağıtım ekranının sabit merkezidir.
+  // Tekniker rotası telefonda her "Rotayı Oluştur" basışında cihazın güncel
+  // GPS konumundan başlar. Windows'taki Yandex manuel başlangıç akışı korunur.
+
+  // Mobil tarayıcıda Yandex Maps uygulamasına rota noktalarını koordinatla
+  // gönderiyoruz. Adres metni yine tek doğruluk kaynağıdır; koordinat yalnızca
+  // o tıklamada Yandex Geocoder'dan alınır ve veritabanına kaydedilmez.
+  bool get _isMobileYandex =>
+      defaultTargetPlatform == TargetPlatform.android ||
+      defaultTargetPlatform == TargetPlatform.iOS;
+
   @override
   void initState() {
     super.initState();
     _future = _load();
     _initMap();
+    if (ref.read(authControllerProvider).role == AppRole.technician) {
+      unawaited(
+        ref
+            .read(technicianLocationTrackingControllerProvider.notifier)
+            .ensureActive(),
+      );
+    }
   }
 
   @override
@@ -74,7 +102,7 @@ class _TechnicianJobsScreenState extends ConsumerState<TechnicianJobsScreen> {
   }
 
   Future<void> _initMap() async {
-    if (!Platform.isWindows) return;
+    if (!isWindowsDesktop) return;
     try {
       await _mapController.initialize();
       _mapUrlSub = _mapController.url.listen((url) {
@@ -173,6 +201,7 @@ class _TechnicianJobsScreenState extends ConsumerState<TechnicianJobsScreen> {
 
   void _refresh() {
     _yandexRouteSyncTimer?.cancel();
+    _yandexPointCache.clear();
     setState(() {
       _selectedJob = null;
       _lastMapUrl = null;
@@ -189,6 +218,7 @@ class _TechnicianJobsScreenState extends ConsumerState<TechnicianJobsScreen> {
     if (!mounted) return;
     // Karttan/düzenlemeden dönünce adres/telefon değişmiş olabilir.
     _yandexRouteSyncTimer?.cancel();
+    _yandexPointCache.remove(job.id);
     setState(() {
       _lastMapUrl = null;
       _routeBuilt = false;
@@ -205,6 +235,7 @@ class _TechnicianJobsScreenState extends ConsumerState<TechnicianJobsScreen> {
     if (!mounted) return;
     // Yanlış adres düzeltildiyse rota yeniden doğrulansın.
     _yandexRouteSyncTimer?.cancel();
+    _yandexPointCache.remove(job.id);
     setState(() {
       _lastMapUrl = null;
       _routeBuilt = false;
@@ -295,6 +326,50 @@ class _TechnicianJobsScreenState extends ConsumerState<TechnicianJobsScreen> {
     return _canonicalJobAddress(job);
   }
 
+  String _stripRouteMatchNoise(String input) {
+    var value = input;
+
+    // Navigasyon için anlam taşımayan kat / daire / zemin bilgilerini çıkar.
+    value = value
+        .replaceAll(
+          RegExp(
+            r'\b(?:k|kat|d|daire)\s*[:.]?\s*(?:zemin|\d+[a-z]?)\b',
+            caseSensitive: false,
+          ),
+          ' ',
+        )
+        .replaceAll(
+          RegExp(r'\bzemin\s*kat\b', caseSensitive: false),
+          ' ',
+        );
+
+    // Apartman adı Yandex adres sonucunda çoğu zaman bulunmaz. Sokak/cadde
+    // adını değil yalnız "Merve apt.", "Sevgi Aprt." gibi apartman etiketini
+    // eşleştirme metninden çıkarıyoruz.
+    value = value.replaceAll(
+      RegExp(
+        r'\b[A-Za-zÇĞİÖŞÜçğıöşü0-9._-]+\s+(?:apt|aprt|apartman|apartmanı|apartmani)\.?\b',
+        caseSensitive: false,
+      ),
+      ' ',
+    );
+
+    // Blok bilgisi bina numarasını gölgelememeli.
+    value = value
+        .replaceAll(
+          RegExp(r'\b[a-z]\s*blok\b', caseSensitive: false),
+          ' ',
+        )
+        .replaceAll(
+          RegExp(r'\bblok\s*[a-z0-9]+\b', caseSensitive: false),
+          ' ',
+        )
+        .replaceAll(RegExp(r'\s+'), ' ')
+        .trim();
+
+    return value;
+  }
+
   bool _routeValueMatchesJob(TechnicianJob job, String yandexValue) {
     final expectedSignature = _jobRouteSignature(job);
     if (expectedSignature.isNotEmpty) {
@@ -304,15 +379,24 @@ class _TechnicianJobsScreenState extends ConsumerState<TechnicianJobsScreen> {
       return _yandexValueSignature(yandexValue) == expectedSignature;
     }
 
-    final expected = _foldAddressText(job.address);
+    final expected = _foldAddressText(_stripRouteMatchNoise(job.address));
     final actual = _foldAddressText(yandexValue);
     if (expected.isEmpty || actual.isEmpty) return false;
 
     final houseNo = RegExp(r'\bno\s*(\d+[a-z]?)\b')
         .firstMatch(expected)
         ?.group(1);
-    if (houseNo != null && !actual.split(' ').contains(houseNo)) {
-      return false;
+    if (houseNo != null) {
+      final tokens = actual.split(' ');
+      final exactHouse = tokens.contains(houseNo);
+      final suffixedHouse = RegExp(r'^\d+$').hasMatch(houseNo) &&
+          tokens.any(
+            (token) =>
+                token.length == houseNo.length + 1 &&
+                token.startsWith(houseNo) &&
+                RegExp(r'^[a-z]$').hasMatch(token.substring(houseNo.length)),
+          );
+      if (!exactHouse && !suffixedHouse) return false;
     }
 
     const ignored = <String>{
@@ -480,7 +564,7 @@ class _TechnicianJobsScreenState extends ConsumerState<TechnicianJobsScreen> {
   }
 
   Future<void> _openNativeYandexStartPlanner({bool showHint = true}) async {
-    if (!_mapReady || !Platform.isWindows) return;
+    if (!_mapReady || !isWindowsDesktop) return;
     _yandexRouteSyncTimer?.cancel();
     _routeBuilt = false;
     _yandexStartText = null;
@@ -501,7 +585,7 @@ class _TechnicianJobsScreenState extends ConsumerState<TechnicianJobsScreen> {
   }
 
   Future<List<Map<String, String>>> _readYandexInputs() async {
-    if (!_mapReady || !Platform.isWindows) return const [];
+    if (!_mapReady || !isWindowsDesktop) return const [];
     try {
       final value = await _mapController.executeScript(r'''
 (() => Array.from(document.querySelectorAll('input')).map((e, i) => ({
@@ -611,7 +695,7 @@ class _TechnicianJobsScreenState extends ConsumerState<TechnicianJobsScreen> {
   }
 
   Future<List<String>> _readYandexRtextValues() async {
-    if (!_mapReady || !Platform.isWindows) return const [];
+    if (!_mapReady || !isWindowsDesktop) return const [];
     try {
       final href = await _mapController.executeScript('window.location.href');
       final text = href?.toString() ?? '';
@@ -737,7 +821,7 @@ class _TechnicianJobsScreenState extends ConsumerState<TechnicianJobsScreen> {
   }
 
   Future<bool> _clickYandexOptimizeIfAvailable() async {
-    if (!_mapReady || !Platform.isWindows) return false;
+    if (!_mapReady || !isWindowsDesktop) return false;
     try {
       final result = await _mapController.executeScript(r'''
 (() => {
@@ -757,8 +841,44 @@ class _TechnicianJobsScreenState extends ConsumerState<TechnicianJobsScreen> {
     }
   }
 
+  Future<void> _finishYandexOptimizeDialogIfNeeded() async {
+    if (!_mapReady || !isWindowsDesktop) return;
+    try {
+      // Yandex Optimize sonrasında "bitiş noktasını sabitle / Hayır,
+      // teşekkürler" seçimi gösterebilir. Biz tüm müşteri duraklarının serbestçe
+      // en hızlı sıraya geçmesini istediğimiz için "Hayır, teşekkürler" seçilir.
+      await _mapController.executeScript(r'''
+(() => {
+  const fold = (v) => (v || '')
+    .toLocaleLowerCase('tr-TR')
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .replace(/ı/g, 'i').replace(/ş/g, 's').replace(/ğ/g, 'g')
+    .replace(/ü/g, 'u').replace(/ö/g, 'o').replace(/ç/g, 'c');
+  const visible = (e) => {
+    const r = e.getBoundingClientRect();
+    const st = getComputedStyle(e);
+    return r.width > 2 && r.height > 2 &&
+      st.display !== 'none' && st.visibility !== 'hidden';
+  };
+  const nodes = Array.from(document.querySelectorAll('button, [role="button"]'))
+    .filter(visible);
+  const target = nodes.find((e) => {
+    const t = fold((e.textContent || '').replace(/\s+/g, ' ').trim());
+    return t === 'hayir, tesekkurler' ||
+           t === 'hayir tesekkurler' ||
+           t === 'no, thanks' ||
+           t === 'no thanks';
+  });
+  if (!target) return false;
+  target.click();
+  return true;
+})()
+''');
+    } catch (_) {}
+  }
+
   Future<List<String>> _readYandexRouteInputValues() async {
-    if (!_mapReady || !Platform.isWindows) return const [];
+    if (!_mapReady || !isWindowsDesktop) return const [];
     try {
       final value = await _mapController.executeScript(r'''
 (() => {
@@ -798,7 +918,7 @@ class _TechnicianJobsScreenState extends ConsumerState<TechnicianJobsScreen> {
   }
 
   Future<bool> _clickYandexAddRoutePoint() async {
-    if (!_mapReady || !Platform.isWindows) return false;
+    if (!_mapReady || !isWindowsDesktop) return false;
     try {
       final result = await _mapController.executeScript(r'''
 (() => {
@@ -834,7 +954,7 @@ class _TechnicianJobsScreenState extends ConsumerState<TechnicianJobsScreen> {
   }
 
   Future<bool> _fillYandexRouteInput(int index, String text) async {
-    if (!_mapReady || !Platform.isWindows) return false;
+    if (!_mapReady || !isWindowsDesktop) return false;
     if (!await _ensureYandexRouteInput(index)) return false;
     final encoded = jsonEncode(text);
     try {
@@ -893,7 +1013,7 @@ class _TechnicianJobsScreenState extends ConsumerState<TechnicianJobsScreen> {
   }
 
   Future<List<String>> _readYandexSuggestionCandidates() async {
-    if (!_mapReady || !Platform.isWindows) return const [];
+    if (!_mapReady || !isWindowsDesktop) return const [];
     try {
       final value = await _mapController.executeScript(r'''
 (() => {
@@ -955,7 +1075,7 @@ class _TechnicianJobsScreenState extends ConsumerState<TechnicianJobsScreen> {
   }
 
   Future<bool> _clickYandexSuggestionCandidate(int index) async {
-    if (!_mapReady || !Platform.isWindows) return false;
+    if (!_mapReady || !isWindowsDesktop) return false;
     try {
       final result = await _mapController.executeScript('''
 (() => {
@@ -979,9 +1099,12 @@ class _TechnicianJobsScreenState extends ConsumerState<TechnicianJobsScreen> {
     if (!_routeValueMatchesJob(job, value)) return false;
     final actual = _foldAddressText(value);
     final city = _foldAddressText(job.city);
-    final district = _foldAddressText(job.district);
     if (city.isNotEmpty && !actual.contains(city)) return false;
-    if (district.isNotEmpty && !actual.contains(district)) return false;
+
+    // Yandex bazı doğru bina önerilerinde ilçe adını göstermeyebiliyor.
+    // Sorguda ilçe zaten gönderildiği için burada şehir + sokak/cadde + kapı
+    // eşleşmesini yeterli kabul ediyoruz; böylece doğru adres ilçe metni
+    // eksik diye reddedilmiyor.
     return true;
   }
 
@@ -1025,7 +1148,17 @@ class _TechnicianJobsScreenState extends ConsumerState<TechnicianJobsScreen> {
 
   Future<void> _buildRouteWithNativeYandex(List<TechnicianJob> jobs) async {
     if (jobs.isEmpty || _optimizing) return;
-    if (!_mapReady || !Platform.isWindows) {
+
+    // Web tekniker ekranında (telefon/PWA veya masaüstü tarayıcı) MOTUS
+    // cihazın/tarayıcının güncel konumunu alır, işleri kendi içinde sıralar,
+    // route_order'ı kaydeder ve aynı sırayı Yandex'e gönderir.
+    // Yönetici dağıtım ekranının 1921 başlangıcı bu akıştan tamamen bağımsızdır.
+    if (isWebPlatform) {
+      await _optimizeAndLaunchMobileYandex(jobs);
+      return;
+    }
+
+    if (!_mapReady || !isWindowsDesktop) {
       await _launchYandex(jobs);
       return;
     }
@@ -1141,6 +1274,23 @@ class _TechnicianJobsScreenState extends ConsumerState<TechnicianJobsScreen> {
       _invalidAddressResolvedText = <String, String>{};
 
       _localRouteOrderIds = jobs.map((job) => job.id).toList(growable: false);
+
+      // "Rotayı Oluştur" sonrası Yandex'in kendi Optimize sırasını al.
+      // Yandex durakları yeniden sıraladığında _syncOrderFromYandexPlanner
+      // aynı sırayı MOTUS listesine ve Supabase route_order alanına yazar.
+      var optimizeClicked = false;
+      for (var attempt = 0; attempt < 6 && !optimizeClicked; attempt++) {
+        await Future<void>.delayed(const Duration(milliseconds: 500));
+        optimizeClicked = await _clickYandexOptimizeIfAvailable();
+      }
+      if (optimizeClicked) {
+        await Future<void>.delayed(const Duration(milliseconds: 500));
+        await _finishYandexOptimizeDialogIfNeeded();
+        // Yandex'in "Optimal rota" sırasını inputlara yansıtması için bekle.
+        // Periyodik senkron da trafik/DOM gecikmesi olursa değişikliği yakalar.
+        await Future<void>.delayed(const Duration(milliseconds: 2200));
+        await _syncOrderFromYandexPlanner(jobs);
+      }
       _startYandexOrderSync(jobs);
 
       if (mounted) {
@@ -1162,32 +1312,745 @@ class _TechnicianJobsScreenState extends ConsumerState<TechnicianJobsScreen> {
   Future<void> _syncMap(List<TechnicianJob> jobs) async {
     // Yandex rota ekraninin kendi Nereden secimini ve Optimize et siralamasini
     // tekrar loadUrl yaparak ezmiyoruz.
-    if (!_mapReady || !Platform.isWindows || _lastMapUrl != null) return;
+    if (!_mapReady || !isWindowsDesktop || _lastMapUrl != null) return;
     await _openNativeYandexStartPlanner(showHint: false);
   }
 
-  Future<void> _launchYandex(List<TechnicianJob> jobs) async {
-    final points = jobs
-        .map(_nativeRoutePointForJob)
-        .where((value) => value.trim().isNotEmpty)
-        .toList(growable: false);
-    if (points.isEmpty) return;
-    await launchUrl(
-      Uri.parse(_nativeRoutePlannerUrl(rtext: points.join('~'))),
-      mode: LaunchMode.externalApplication,
+  List<String> _externalRoutePoints(List<TechnicianJob> jobs) {
+    final points = <String>[];
+
+    // Tekniker ekranında 1921 Sok. artık otomatik başlangıç değildir.
+    // Windows'ta kullanıcı Yandex'in "Nereden" alanından seçtiyse o başlangıç
+    // korunur. Mobil/PWA rotası ise ayrı akışta cihaz GPS'inden başlatılır.
+    if (isWindowsDesktop && (_yandexStartText?.trim().isNotEmpty ?? false)) {
+      points.add(_startPointWithCityContext(_yandexStartText!.trim(), jobs));
+    }
+
+    for (final job in jobs) {
+      final address = _nativeRoutePointForJob(job).trim();
+      if (address.isNotEmpty) points.add(address);
+    }
+    return points;
+  }
+
+  String _mobileRouteQueryText(String input) {
+    var value = _stripRouteMatchNoise(input);
+
+    // Yandex'e farklı kullanıcı yazımlarını doğal yol adlarına çevirerek de
+    // soruyoruz. Sokak dışında cadde ve bulvar da aynı akışta desteklenir.
+    value = value
+        .replaceAll(
+          RegExp(r'\b(?:sk|sok|sokak)\b\.?', caseSensitive: false),
+          'Sokak',
+        )
+        .replaceAll(
+          RegExp(
+            r'\b(?:cad|cadde|caddesi|cd)\b\.?',
+            caseSensitive: false,
+          ),
+          'Caddesi',
+        )
+        .replaceAll(
+          RegExp(
+            r'\b(?:blv|bulvar|bulvari|bulvarı)\b\.?',
+            caseSensitive: false,
+          ),
+          'Bulvarı',
+        )
+        .replaceAllMapped(
+          RegExp(
+            r'\bno\s*[:.]?\s*(\d+)\s*/\s*([a-z])\b',
+            caseSensitive: false,
+          ),
+          (m) => '${m.group(1)}${m.group(2)!.toUpperCase()}',
+        )
+        .replaceAllMapped(
+          RegExp(r'\bno\s*[:.]?\s*(\d+[a-z]?)\b', caseSensitive: false),
+          (m) => m.group(1)!,
+        )
+        .replaceAll(RegExp(r'\s+'), ' ')
+        .trim();
+
+    return value;
+  }
+
+  bool _hasNavigableRoadAddress(String input) {
+    final folded = _foldAddressText(input);
+    if (folded.isEmpty) return false;
+    return RegExp(
+      r'\b(?:sk|sok|sokak|cd|cad|cadde|caddesi|blv|bulvar|bulvari)\b',
+      caseSensitive: false,
+    ).hasMatch(folded);
+  }
+
+  Map<String, List<String>> _geoObjectAddressComponents(
+    Map<String, dynamic> geoObject,
+  ) {
+    final result = <String, List<String>>{};
+    final metaDataProperty = geoObject['metaDataProperty'];
+    if (metaDataProperty is! Map) return result;
+    final geocoderMetaData = metaDataProperty['GeocoderMetaData'];
+    if (geocoderMetaData is! Map) return result;
+    final address = geocoderMetaData['Address'];
+    if (address is! Map) return result;
+    final components = address['Components'];
+    if (components is! List) return result;
+
+    for (final component in components.whereType<Map>()) {
+      final kind = component['kind']?.toString().trim().toLowerCase() ?? '';
+      final name = component['name']?.toString().trim() ?? '';
+      if (kind.isEmpty || name.isEmpty) continue;
+      result.putIfAbsent(kind, () => <String>[]).add(name);
+    }
+    return result;
+  }
+
+  String _geoObjectPrecision(Map<String, dynamic> geoObject) {
+    final metaDataProperty = geoObject['metaDataProperty'];
+    if (metaDataProperty is! Map) return '';
+    final geocoderMetaData = metaDataProperty['GeocoderMetaData'];
+    if (geocoderMetaData is! Map) return '';
+    return geocoderMetaData['precision']?.toString().trim().toLowerCase() ?? '';
+  }
+
+  bool _geoObjectHasHouse(Map<String, dynamic> geoObject) {
+    final components = _geoObjectAddressComponents(geoObject);
+    return (components['house'] ?? const <String>[]).any((e) => e.trim().isNotEmpty);
+  }
+
+
+  List<String> _mobileGeocoderQueriesForJob(TechnicianJob job) {
+    final raw = job.address.trim();
+    if (raw.isEmpty) return const <String>[];
+
+    final cleaned = _stripRouteMatchNoise(raw);
+    final normalized = _mobileRouteQueryText(raw);
+
+    List<String> withLocation(String address) {
+      final result = <String>[];
+      final district = job.district.trim();
+      final city = job.city.trim();
+
+      if (address.trim().isEmpty) return result;
+      if (district.isNotEmpty && city.isNotEmpty) {
+        result.add('$address, $district, $city, Türkiye');
+      }
+      if (city.isNotEmpty) {
+        result.add('$address, $city, Türkiye');
+      }
+      result.add('$address, Türkiye');
+      return result;
+    }
+
+    final candidates = <String>[
+      ...withLocation(normalized),
+      ...withLocation(cleaned),
+      ...withLocation(raw),
+    ];
+
+    final unique = <String>[];
+    final seen = <String>{};
+    for (final query in candidates) {
+      final key = _foldAddressText(query);
+      if (key.isEmpty || seen.contains(key)) continue;
+      seen.add(key);
+      unique.add(query);
+    }
+    return unique;
+  }
+
+  String _geoObjectMatchText(Map<String, dynamic> geoObject) {
+    final values = <String>[];
+
+    void add(dynamic value) {
+      final text = value?.toString().trim() ?? '';
+      if (text.isNotEmpty && !values.contains(text)) values.add(text);
+    }
+
+    add(geoObject['name']);
+    add(geoObject['description']);
+
+    final metaDataProperty = geoObject['metaDataProperty'];
+    if (metaDataProperty is Map) {
+      final geocoderMetaData = metaDataProperty['GeocoderMetaData'];
+      if (geocoderMetaData is Map) {
+        add(geocoderMetaData['text']);
+        final address = geocoderMetaData['Address'];
+        if (address is Map) {
+          add(address['formatted']);
+          final components = address['Components'];
+          if (components is List) {
+            for (final component in components.whereType<Map>()) {
+              add(component['name']);
+            }
+          }
+        }
+      }
+    }
+
+    return values.join(', ');
+  }
+
+  ({double lat, double lon, String label})? _geoObjectPoint(
+    Map<String, dynamic> geoObject,
+  ) {
+    final point = geoObject['Point'];
+    if (point is! Map) return null;
+
+    final position = point['pos']?.toString().trim() ?? '';
+    final parts = position.split(RegExp(r'\s+'));
+    if (parts.length < 2) return null;
+
+    // Yandex Geocoder "lon lat" sırasıyla döndürür.
+    final lon = double.tryParse(parts[0]);
+    final lat = double.tryParse(parts[1]);
+    if (lat == null || lon == null) return null;
+
+    return (
+      lat: lat,
+      lon: lon,
+      label: _geoObjectMatchText(geoObject),
     );
+  }
+
+  Future<List<Map<String, dynamic>>> _queryYandexGeocoder(String query) async {
+    if (!isWebPlatform) return const <Map<String, dynamic>>[];
+
+    final accessToken =
+        Supabase.instance.client.auth.currentSession?.accessToken ?? '';
+    if (accessToken.isEmpty) {
+      throw StateError('MOTUS oturumu bulunamadı.');
+    }
+
+    final response = await http.post(
+      Uri.base.resolve('/api/yandex-geocode'),
+      headers: {
+        'Accept': 'application/json',
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer $accessToken',
+      },
+      body: jsonEncode({'query': query}),
+    );
+
+    dynamic decoded;
+    try {
+      decoded = jsonDecode(response.body);
+    } catch (_) {
+      decoded = null;
+    }
+
+    if (response.statusCode != 200) {
+      final message = decoded is Map && decoded['message'] != null
+          ? decoded['message'].toString()
+          : 'Yandex adres servisi ${response.statusCode}';
+      throw StateError(message);
+    }
+
+    if (decoded is! Map) return const <Map<String, dynamic>>[];
+    final responseMap = decoded['response'];
+    if (responseMap is! Map) return const <Map<String, dynamic>>[];
+    final collection = responseMap['GeoObjectCollection'];
+    if (collection is! Map) return const <Map<String, dynamic>>[];
+    final members = collection['featureMember'];
+    if (members is! List) return const <Map<String, dynamic>>[];
+
+    return members
+        .whereType<Map>()
+        .map((member) => member['GeoObject'])
+        .whereType<Map>()
+        .map((value) => Map<String, dynamic>.from(value))
+        .toList(growable: false);
+  }
+
+  Future<({double lat, double lon, String label})?> _resolveYandexJobPoint(
+    TechnicianJob job,
+  ) async {
+    final cached = _yandexPointCache[job.id];
+    if (cached != null) return cached;
+
+    // Mahalle + kapı no gibi, yol adı/türü bulunmayan kayıtları yaklaşık bir
+    // noktaya çevirmiyoruz. Sokak / cadde / bulvar yoksa adres düzeltilmeli.
+    if (!_hasNavigableRoadAddress(job.address)) return null;
+
+    for (final query in _mobileGeocoderQueriesForJob(job)) {
+      final results = await _queryYandexGeocoder(query);
+      for (final geoObject in results) {
+        final point = _geoObjectPoint(geoObject);
+        if (point == null) continue;
+
+        final expectedCity = _foldAddressText(job.city);
+        final actual = _foldAddressText(point.label);
+        if (expectedCity.isNotEmpty && !actual.contains(expectedCity)) {
+          continue;
+        }
+
+        // Optimizasyonda sokak ortası/mahalle merkezi kullanılmasın. Yandex'in
+        // bina bileşeni olmalı ve mevcut V39 sokak/cadde + kapı eşleştirmesi
+        // sonucu kabul etmelidir.
+        final precision = _geoObjectPrecision(geoObject);
+        if (!_geoObjectHasHouse(geoObject) && precision != 'exact') continue;
+        if (!_routeValueMatchesJob(job, point.label)) continue;
+
+        _yandexPointCache[job.id] = point;
+        return point;
+      }
+    }
+    return null;
+  }
+
+
+  double _routeDistance(
+    ({double lat, double lon}) a,
+    ({double lat, double lon}) b,
+  ) {
+    return Geolocator.distanceBetween(a.lat, a.lon, b.lat, b.lon);
+  }
+
+  List<int> _nearestNeighborOrder(
+    ({double lat, double lon}) start,
+    List<({double lat, double lon})> points,
+  ) {
+    if (points.isEmpty) return const <int>[];
+    final remaining = List<int>.generate(points.length, (i) => i);
+    final order = <int>[];
+    var current = start;
+
+    while (remaining.isNotEmpty) {
+      var bestPos = 0;
+      var bestDistance = double.infinity;
+      for (var i = 0; i < remaining.length; i++) {
+        final index = remaining[i];
+        final distance = _routeDistance(current, points[index]);
+        if (distance < bestDistance) {
+          bestDistance = distance;
+          bestPos = i;
+        }
+      }
+      final chosen = remaining.removeAt(bestPos);
+      order.add(chosen);
+      current = points[chosen];
+    }
+    return order;
+  }
+
+  void _twoOptOpenRoute(
+    ({double lat, double lon}) start,
+    List<({double lat, double lon})> points,
+    List<int> order,
+  ) {
+    if (order.length < 3) return;
+
+    // Sabit başlangıçlı ve dönüşü olmayan saha rotası için 2-opt. Saat / randevu
+    // bilgisi kasıtlı olarak hesaba katılmaz; yalnız coğrafi sıra iyileştirilir.
+    for (var pass = 0; pass < 40; pass++) {
+      var improved = false;
+      for (var i = 0; i < order.length - 1; i++) {
+        final previous = i == 0 ? start : points[order[i - 1]];
+        final first = points[order[i]];
+        for (var k = i + 1; k < order.length; k++) {
+          final last = points[order[k]];
+          final hasNext = k + 1 < order.length;
+          final next = hasNext ? points[order[k + 1]] : null;
+
+          final oldDistance = _routeDistance(previous, first) +
+              (next == null ? 0 : _routeDistance(last, next));
+          final newDistance = _routeDistance(previous, last) +
+              (next == null ? 0 : _routeDistance(first, next));
+
+          if (newDistance + 1 < oldDistance) {
+            final reversed = order.sublist(i, k + 1).reversed.toList();
+            order.setRange(i, k + 1, reversed);
+            improved = true;
+          }
+        }
+      }
+      if (!improved) break;
+    }
+  }
+
+  Future<void> _optimizeAndLaunchMobileYandex(
+    List<TechnicianJob> jobs,
+  ) async {
+    if (jobs.isEmpty || _optimizing) return;
+    setState(() {
+      _optimizing = true;
+      _invalidAddressJobIds = <String>{};
+      _invalidAddressResolvedText = <String, String>{};
+    });
+
+    try {
+      // V57: tekniker rotası sabit 1921 Sok. yerine teknikerin butona
+      // bastığı andaki gerçek GPS konumundan başlar. Konum alınamazsa başka
+      // bir başlangıç tahmin edilmez ve rota oluşturulmaz.
+      final position = await _readCurrentPosition();
+      if (position == null) return;
+
+      final start = (lat: position.latitude, lon: position.longitude);
+      if (mounted) {
+        setState(() {
+          _currentPosition = position;
+          _startPointLabel = 'Mevcut Konum';
+          _startPointLatitude = position.latitude;
+          _startPointLongitude = position.longitude;
+        });
+      }
+
+      final resolvedJobs = <TechnicianJob>[];
+      final resolvedPoints = <({double lat, double lon})>[];
+      final unresolvedJobs = <TechnicianJob>[];
+
+      for (final job in jobs) {
+        final point = await _resolveYandexJobPoint(job);
+        if (point == null) {
+          unresolvedJobs.add(job);
+        } else {
+          resolvedJobs.add(job);
+          resolvedPoints.add((lat: point.lat, lon: point.lon));
+        }
+      }
+
+      if (resolvedJobs.isEmpty) {
+        if (mounted) {
+          setState(() {
+            _invalidAddressJobIds = unresolvedJobs.map((e) => e.id).toSet();
+          });
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              duration: Duration(seconds: 7),
+              content: Text('Rota için doğrulanabilen müşteri adresi bulunamadı.'),
+            ),
+          );
+        }
+        return;
+      }
+
+      final order = _nearestNeighborOrder(start, resolvedPoints);
+      _twoOptOpenRoute(start, resolvedPoints, order);
+
+      final orderedResolvedJobs = order.map((i) => resolvedJobs[i]).toList();
+      final orderedResolvedPoints = order.map((i) => resolvedPoints[i]).toList();
+      final allOrderedJobs = <TechnicianJob>[
+        ...orderedResolvedJobs,
+        ...unresolvedJobs,
+      ];
+      final ids = allOrderedJobs.map((e) => e.id).toList(growable: false);
+
+      try {
+        await ref
+            .read(serviceExecutionRepositoryProvider)
+            .saveTechnicianRouteOrder(ids);
+      } catch (_) {
+        // Kalıcı sıra kaydı başarısız olsa da bu oturumdaki görünüm ve Yandex
+        // rotası aynı sıralamayı kullanmaya devam eder.
+      }
+
+      if (!mounted) return;
+      setState(() {
+        _localRouteOrderIds = ids;
+        _invalidAddressJobIds = unresolvedJobs.map((e) => e.id).toSet();
+        _routeBuilt = true;
+        _future = _load();
+      });
+
+      if (orderedResolvedPoints.length + 1 > 20) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Yandex tek rotada en fazla 20 nokta destekliyor.'),
+          ),
+        );
+        return;
+      }
+
+      // Yandex uygulamasına da başlangıç olarak "mevcut konum" verilir.
+      // Müşteriler MOTUS'un az önce kaydettiği sırayla gönderilir.
+      // Android/iOS'ta custom yandexmaps:// rtext deep-link'i boş
+      // "mevcut konum" başlangıcını güvenilir biçimde kabul etmiyor ve
+      // yalnız haritayı açabiliyor. Web/PWA'da çalışan kanıtlanmış HTTPS
+      // route formatını native mobilde de aynen kullanıyoruz ve başlangıcı
+      // boş bırakmak yerine gerçek GPS koordinatını açıkça gönderiyoruz.
+      final webPoints = <String>[
+        '${position.latitude},${position.longitude}',
+        ...orderedResolvedPoints.map((p) => '${p.lat},${p.lon}'),
+      ];
+      await launchUrl(
+        Uri.parse(_nativeRoutePlannerUrl(rtext: webPoints.join('~'))),
+        mode: LaunchMode.externalApplication,
+        webOnlyWindowName: isWebPlatform ? '_blank' : null,
+      );
+
+      if (mounted) {
+        final suffix = unresolvedJobs.isEmpty
+            ? ''
+            : ' Adresi kesin bulunamadığı için sona alınan: ${unresolvedJobs.map((e) => e.customerName).join(', ')}';
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            duration: const Duration(seconds: 8),
+            content: Text(
+              '${orderedResolvedJobs.length} iş mevcut konumunuza göre MOTUS tarafından sıralandı.$suffix',
+            ),
+          ),
+        );
+      }
+    } catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            duration: const Duration(seconds: 7),
+            content: Text('MOTUS rota optimizasyonu hazırlanamadı: $error'),
+          ),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _optimizing = false);
+    }
+  }
+
+  Uri _nativeYandexAppRouteUri(
+    List<({double lat, double lon})> points, {
+    bool currentLocationAsStart = false,
+  }) {
+    final routeText = <String>[
+      if (currentLocationAsStart) '',
+      ...points.map((point) => '${point.lat},${point.lon}'),
+    ].join('~');
+
+    return Uri(
+      scheme: 'yandexmaps',
+      host: 'maps.yandex.com',
+      path: '/',
+      queryParameters: {
+        'rtext': routeText,
+        'rtt': 'auto',
+      },
+    );
+  }
+
+  Uri _nativeYandexAppSearchUri(String query) {
+    return Uri(
+      scheme: 'yandexmaps',
+      host: 'maps.yandex.com',
+      path: '/',
+      queryParameters: {'text': query},
+    );
+  }
+
+  Future<bool> _openYandexNativeUri(Uri uri) async {
+    try {
+      return await launchUrl(
+        uri,
+        mode: LaunchMode.platformDefault,
+        webOnlyWindowName: isWebPlatform ? '_self' : null,
+      );
+    } catch (_) {
+      return false;
+    }
+  }
+
+  Future<void> _openYandexTextSearchFallback(
+    String query, {
+    String? message,
+  }) async {
+    final nativeOpened = await _openYandexNativeUri(
+      _nativeYandexAppSearchUri(query),
+    );
+
+    if (!nativeOpened) {
+      await launchUrl(
+        Uri.https('yandex.com.tr', '/maps/', {'text': query}),
+        mode: LaunchMode.platformDefault,
+        webOnlyWindowName: isWebPlatform ? '_blank' : null,
+      );
+    }
+
+    if (message != null && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          duration: const Duration(seconds: 5),
+          content: Text(message),
+        ),
+      );
+    }
+  }
+
+  Future<void> _launchYandex(List<TechnicianJob> jobs) async {
+    if (jobs.isEmpty) return;
+
+    // Yalnız native Windows uygulaması V39'daki Yandex WebView akışında kalır.
+    // Web/PWA tekniker ekranı her cihazda mevcut konumu başlangıç kabul eder.
+    if (!isWebPlatform && !_isMobileYandex) {
+      final textPoints = _externalRoutePoints(jobs);
+      if (textPoints.length < 2) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Önce Yandex’te tekniker başlangıç noktasını seçin.'),
+            ),
+          );
+        }
+        return;
+      }
+      final opened = await launchUrl(
+        Uri.parse(_nativeRoutePlannerUrl(rtext: textPoints.join('~'))),
+        mode: LaunchMode.externalApplication,
+      );
+      if (!opened && mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Yandex rota ekranı açılamadı.')),
+        );
+      }
+      return;
+    }
+
+    if (jobs.length + 1 > 20) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Yandex tek rotada en fazla 20 nokta destekliyor.'),
+          ),
+        );
+      }
+      return;
+    }
+
+    try {
+      // Teknikerin toplu harita rotası da sabit merkezden değil, o anki GPS
+      // konumundan başlar. Sıralama daha önce Rotayı Oluştur ile kaydedildiyse
+      // jobs zaten route_order sırasındadır.
+      final position = await _readCurrentPosition();
+      if (position == null) return;
+
+      final routePoints = <({double lat, double lon})>[];
+      final unresolved = <TechnicianJob>[];
+
+      // jobs ekrandaki route_order sırasındadır. Rotayı Oluştur kullanıldıysa
+      // bu sıra MOTUS'un kendi nearest-neighbor + 2-opt optimizasyonundan gelir.
+      // Haritayı Aç aynı kayıtlı sırayı Yandex'e tekrar gönderir.
+      for (final job in jobs) {
+        final point = await _resolveYandexJobPoint(job);
+        if (point == null) {
+          unresolved.add(job);
+          continue;
+        }
+        routePoints.add((lat: point.lat, lon: point.lon));
+      }
+
+      if (unresolved.isNotEmpty) {
+        if (mounted) {
+          setState(() {
+            _invalidAddressJobIds = unresolved.map((job) => job.id).toSet();
+          });
+        }
+
+        // Yanlış/eksik adresi Yandex'e tahmin ettirmiyoruz. Doğrulanan
+        // müşteriler mevcut MOTUS sırasıyla açılır; sorunlu kayıtlar listede
+        // kırmızı kalır ve tekniker adresi düzelttikten sonra tekrar deneyebilir.
+        if (routePoints.isNotEmpty) {
+          final partialWebPoints = <String>[
+            '${position.latitude},${position.longitude}',
+            ...routePoints.map((p) => '${p.lat},${p.lon}'),
+          ];
+          await launchUrl(
+            Uri.parse(_nativeRoutePlannerUrl(rtext: partialWebPoints.join('~'))),
+            mode: LaunchMode.externalApplication,
+            webOnlyWindowName: isWebPlatform ? '_blank' : null,
+          );
+        }
+
+        if (mounted) {
+          final names = unresolved.map((job) => job.customerName).join(', ');
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              duration: const Duration(seconds: 8),
+              content: Text(
+                'Adresi kesin bulunamadığı için Yandex rotasına eklenmeyen: $names',
+              ),
+            ),
+          );
+        }
+        return;
+      }
+
+      final webPoints = <String>[
+        '${position.latitude},${position.longitude}',
+        ...routePoints.map((p) => '${p.lat},${p.lon}'),
+      ];
+      await launchUrl(
+        Uri.parse(_nativeRoutePlannerUrl(rtext: webPoints.join('~'))),
+        mode: LaunchMode.externalApplication,
+        webOnlyWindowName: isWebPlatform ? '_blank' : null,
+      );
+    } catch (error) {
+      // Tekniker tarafında artık 1921 veya başka bir sabit başlangıca geri
+      // düşmüyoruz. Konum/geocoder geçici olarak çalışmazsa yanlış rota açmak
+      // yerine teknikerin tekrar denemesini istiyoruz.
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            duration: const Duration(seconds: 6),
+            content: Text(
+              'Yandex hazır rota servisi kullanılamadı. Konumunuzu kontrol edip tekrar deneyin. $error',
+            ),
+          ),
+        );
+      }
+    }
   }
 
   Future<void> _launchMap(TechnicianJob job) async {
     final query = _canonicalJobAddress(job).trim();
     if (query.isEmpty) return;
-    await launchUrl(
-      Uri.https('yandex.com.tr', '/maps/', {
-        'mode': 'search',
-        'text': query,
-      }),
-      mode: LaunchMode.externalApplication,
-    );
+
+    if (!_isMobileYandex) {
+      final opened = await launchUrl(
+        Uri.parse(_nativeRoutePlannerUrl(rtext: '~$query')),
+        mode: LaunchMode.externalApplication,
+      );
+      if (!opened && mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Yandex harita açılamadı.')),
+        );
+      }
+      return;
+    }
+
+    if (!_hasNavigableRoadAddress(job.address)) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            duration: const Duration(seconds: 6),
+            content: Text(
+              '${job.customerName} adresinde sokak/cadde/bulvar bilgisi yok. Yanlış konuma göndermemek için harita açılmadı.',
+            ),
+          ),
+        );
+      }
+      return;
+    }
+
+    try {
+      final point = await _resolveYandexJobPoint(job);
+      if (point != null) {
+        final opened = await _openYandexNativeUri(
+          _nativeYandexAppRouteUri(
+            [(lat: point.lat, lon: point.lon)],
+            currentLocationAsStart: true,
+          ),
+        );
+        if (opened) return;
+      }
+
+      // Yandex Geocoder sonuç vermezse adresi "hatalı" diye kilitlemeyiz.
+      // Aynı temiz adresi Yandex uygulamasının kendi aramasına bırakırız.
+      await _openYandexTextSearchFallback(
+        _mobileRouteQueryText(query),
+        message:
+            '${job.customerName} için rota noktası doğrudan hazırlanamadı; adres Yandex aramasında açıldı.',
+      );
+    } catch (_) {
+      await _openYandexTextSearchFallback(
+        _mobileRouteQueryText(query),
+      );
+    }
   }
 
   Future<void> _sendOnMyWay(String phone, String customerName) async {
@@ -1214,6 +2077,18 @@ class _TechnicianJobsScreenState extends ConsumerState<TechnicianJobsScreen> {
     final cleaned = phone.replaceAll(RegExp(r'[^0-9+]'), '');
     if (cleaned.isEmpty) return;
     await launchUrl(Uri.parse('tel:$cleaned'));
+  }
+
+  String _secretaryNoteText(TechnicianJob job) {
+    return job.description
+        .replaceAll(
+          RegExp(
+            r'^(?:\[[^\]]+\]\s*)+',
+            caseSensitive: false,
+          ),
+          '',
+        )
+        .trim();
   }
 
   String _timeLabel(TechnicianJob job) {
@@ -1275,12 +2150,20 @@ class _TechnicianJobsScreenState extends ConsumerState<TechnicianJobsScreen> {
         }
         return null;
       }
-      return await Geolocator.getCurrentPosition(
+      final position = await Geolocator.getCurrentPosition(
         locationSettings: const LocationSettings(
           accuracy: LocationAccuracy.high,
           timeLimit: Duration(seconds: 15),
         ),
       );
+      if (ref.read(authControllerProvider).role == AppRole.technician) {
+        unawaited(
+          ref
+              .read(technicianLocationTrackingControllerProvider.notifier)
+              .enable(initialPosition: position),
+        );
+      }
+      return position;
     } catch (error) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -1324,7 +2207,7 @@ class _TechnicianJobsScreenState extends ConsumerState<TechnicianJobsScreen> {
     required double initialLon,
     String subtitle = 'Haritada istediğiniz noktaya tıklayın.',
   }) async {
-    if (!Platform.isWindows) return null;
+    if (!isWindowsDesktop) return null;
     return showDialog<({double lat, double lon})>(
       context: context,
       barrierDismissible: false,
@@ -1338,7 +2221,7 @@ class _TechnicianJobsScreenState extends ConsumerState<TechnicianJobsScreen> {
   }
 
   Future<void> _chooseStartPoint(List<TechnicianJob> jobs) async {
-    if (!Platform.isWindows) {
+    if (!isWindowsDesktop) {
       await _useCurrentLocation(jobs);
       return;
     }
@@ -1867,12 +2750,21 @@ class _TechnicianJobsScreenState extends ConsumerState<TechnicianJobsScreen> {
           OutlinedButton.icon(
             onPressed: _optimizing
                 ? null
-                : () => _openNativeYandexStartPlanner(),
-            icon: const Icon(Icons.location_searching_rounded),
+                : isWindowsDesktop
+                    ? () => _openNativeYandexStartPlanner()
+                    : () async {
+                        final data = await _future;
+                        await _useCurrentLocation(data.active);
+                      },
+            icon: const Icon(Icons.my_location_rounded),
             label: Text(
-              _yandexStartText == null
-                  ? 'Başlangıcı Yandex’ten Seç'
-                  : 'Başlangıç: ${_yandexStartText!}',
+              isWindowsDesktop
+                  ? (_yandexStartText == null
+                      ? 'Başlangıcı Yandex’ten Seç'
+                      : 'Başlangıç: ${_yandexStartText!}')
+                  : (_startPointLabel == null
+                      ? 'Başlangıç: Mevcut Konum'
+                      : 'Başlangıç: $_startPointLabel'),
               overflow: TextOverflow.ellipsis,
             ),
           ),
@@ -2076,6 +2968,7 @@ class _TechnicianJobsScreenState extends ConsumerState<TechnicianJobsScreen> {
   }) {
     final selected = _selectedJob?.id == job.id;
     final invalidAddress = _invalidAddressJobIds.contains(job.id);
+    final secretaryNote = _secretaryNoteText(job);
     return Material(
       color: invalidAddress
           ? const Color(0xFFFFF1F1)
@@ -2083,7 +2976,9 @@ class _TechnicianJobsScreenState extends ConsumerState<TechnicianJobsScreen> {
               ? const Color(0xFFE7F8FA)
               : Colors.transparent,
       child: InkWell(
-        onTap: () => setState(() => _selectedJob = job),
+        onTap: compact
+            ? () => _openCustomerCard(job)
+            : () => setState(() => _selectedJob = job),
         child: Padding(
           padding: const EdgeInsets.all(12),
           child: Column(
@@ -2163,6 +3058,29 @@ class _TechnicianJobsScreenState extends ConsumerState<TechnicianJobsScreen> {
                 overflow: TextOverflow.ellipsis,
                 style: const TextStyle(color: Color(0xFF65778A), fontSize: 12),
               ),
+              if (job.district.trim().isNotEmpty || job.city.trim().isNotEmpty) ...[
+                const SizedBox(height: 3),
+                Row(
+                  children: [
+                    const Icon(Icons.location_on_outlined, size: 14, color: Color(0xFF0A99A7)),
+                    const SizedBox(width: 4),
+                    Expanded(
+                      child: Text(
+                        [job.district.trim(), job.city.trim()]
+                            .where((value) => value.isNotEmpty)
+                            .join(' / '),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          color: Color(0xFF0A7884),
+                          fontSize: 11.5,
+                          fontWeight: FontWeight.w800,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
               if (invalidAddress) ...[
                 const SizedBox(height: 4),
                 Text(
@@ -2185,6 +3103,43 @@ class _TechnicianJobsScreenState extends ConsumerState<TechnicianJobsScreen> {
                   fontSize: 12,
                 ),
               ),
+              if (compact && secretaryNote.isNotEmpty) ...[
+                const SizedBox(height: 8),
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 10,
+                    vertical: 9,
+                  ),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFEAF9FB),
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(color: const Color(0xFFB9E8EC)),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text(
+                        'Sekreter Notu',
+                        style: TextStyle(
+                          color: Color(0xFF087F89),
+                          fontSize: 11,
+                          fontWeight: FontWeight.w900,
+                        ),
+                      ),
+                      const SizedBox(height: 3),
+                      Text(
+                        secretaryNote,
+                        style: const TextStyle(
+                          color: Color(0xFF334E68),
+                          fontSize: 12,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
               if (compact) ...[
                 const SizedBox(height: 8),
                 Wrap(
@@ -2206,6 +3161,23 @@ class _TechnicianJobsScreenState extends ConsumerState<TechnicianJobsScreen> {
                       label: const Text('Geliyorum'),
                     ),
                     OutlinedButton.icon(
+                      onPressed: _canonicalJobAddress(job).trim().isEmpty
+                          ? null
+                          : () => _launchMap(job),
+                      icon: const Icon(Icons.navigation_outlined),
+                      label: const Text('Harita Aç'),
+                    ),
+                    OutlinedButton.icon(
+                      onPressed: () => _openCustomerCard(job),
+                      icon: const Icon(Icons.badge_outlined),
+                      label: const Text('Müşteri'),
+                    ),
+                    OutlinedButton.icon(
+                      onPressed: () => _editCustomer(job),
+                      icon: const Icon(Icons.edit_outlined),
+                      label: const Text('Düzenle'),
+                    ),
+                    OutlinedButton.icon(
                       onPressed: job.status == 'assigned' ? () => _rescheduleJob(job) : null,
                       icon: const Icon(Icons.schedule_rounded),
                       label: const Text('Ertele'),
@@ -2216,7 +3188,7 @@ class _TechnicianJobsScreenState extends ConsumerState<TechnicianJobsScreen> {
                       label: const Text('Gidemiyorum'),
                     ),
                     FilledButton(
-                      onPressed: invalidAddress ? null : () => _openJob(job),
+                      onPressed: () => _openJob(job),
                       child: const Text('İşi Aç'),
                     ),
                   ],
@@ -2421,7 +3393,7 @@ class _TechnicianJobsScreenState extends ConsumerState<TechnicianJobsScreen> {
             ),
             const Divider(height: 1),
             Expanded(
-              child: Platform.isWindows && _mapReady
+              child: isWindowsDesktop && _mapReady
                   ? Stack(
                       children: [
                         Positioned.fill(child: Webview(_mapController)),
@@ -2508,11 +3480,65 @@ class _TechnicianJobsScreenState extends ConsumerState<TechnicianJobsScreen> {
                           ),
                       ],
                     )
-                  : Center(
-                      child: FilledButton.icon(
-                        onPressed: () => _launchYandex(jobs),
-                        icon: const Icon(Icons.map_outlined),
-                        label: const Text('Haritayı Aç'),
+                  : Padding(
+                      padding: const EdgeInsets.all(24),
+                      child: Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          const Icon(
+                            Icons.route_rounded,
+                            size: 46,
+                            color: Color(0xFF10B8C4),
+                          ),
+                          const SizedBox(height: 12),
+                          const Text(
+                            'Web rotası Yandex’te açılır',
+                            style: TextStyle(
+                              fontSize: 17,
+                              fontWeight: FontWeight.w900,
+                              color: Color(0xFF12304A),
+                            ),
+                          ),
+                          const SizedBox(height: 6),
+                          const Text(
+                            'Başlangıç: teknikerin mevcut konumu • Aşağıdaki müşteriler MOTUS sırasıyla Yandex’e gönderilir.',
+                            textAlign: TextAlign.center,
+                            style: TextStyle(
+                              color: Color(0xFF65778A),
+                              fontSize: 12,
+                            ),
+                          ),
+                          const SizedBox(height: 14),
+                          Flexible(
+                            child: ListView.builder(
+                              shrinkWrap: true,
+                              itemCount: jobs.length,
+                              itemBuilder: (context, index) {
+                                final item = jobs[index];
+                                return Padding(
+                                  padding: const EdgeInsets.symmetric(vertical: 3),
+                                  child: Text(
+                                    '${index + 1}. ${item.customerName} — ${item.address}',
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    textAlign: TextAlign.center,
+                                    style: const TextStyle(
+                                      color: Color(0xFF334E68),
+                                      fontSize: 11,
+                                      fontWeight: FontWeight.w700,
+                                    ),
+                                  ),
+                                );
+                              },
+                            ),
+                          ),
+                          const SizedBox(height: 14),
+                          FilledButton.icon(
+                            onPressed: jobs.isEmpty ? null : () => _launchYandex(jobs),
+                            icon: const Icon(Icons.map_outlined),
+                            label: Text('Rotayı Yandex’te Aç (${jobs.length} iş)'),
+                          ),
+                        ],
                       ),
                     ),
             ),

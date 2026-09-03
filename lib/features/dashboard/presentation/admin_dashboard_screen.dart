@@ -77,6 +77,8 @@ class _AdminDashboardScreenState extends ConsumerState<AdminDashboardScreen> {
       _safeServiceRows(start, end, dateField: 'planned_date'),
       _safeServiceRows(start, end, dateField: 'created_at'),
       _safeOverdueServices(),
+      _safeCancelledServices(start, end),
+      _safeCouldNotCompleteServices(start, end),
     ]);
 
     return _DashboardBundle(
@@ -86,6 +88,8 @@ class _AdminDashboardScreenState extends ConsumerState<AdminDashboardScreen> {
       plannedServices: results[3] as List<Map<String, dynamic>>,
       createdServices: results[4] as List<Map<String, dynamic>>,
       overdueServices: results[5] as List<Map<String, dynamic>>,
+      cancelledServices: results[6] as List<Map<String, dynamic>>,
+      couldNotCompleteServices: results[7] as List<Map<String, dynamic>>,
       rangeStart: start,
       rangeEnd: end,
     );
@@ -160,6 +164,172 @@ class _AdminDashboardScreenState extends ConsumerState<AdminDashboardScreen> {
           ...row,
           'customer_name': customerNames[customerId] ?? 'Müşteri',
           'technician_name': technicianNames[technicianId] ?? 'Atanmadı',
+        };
+      }).toList(growable: false);
+    } catch (_) {
+      return const <Map<String, dynamic>>[];
+    }
+  }
+
+  Future<List<Map<String, dynamic>>> _safeCancelledServices(
+    DateTime start,
+    DateTime end,
+  ) async {
+    try {
+      final client = ref.read(operationsRepositoryProvider).client;
+      final rows = List<Map<String, dynamic>>.from(
+        await client
+            .from('service_requests')
+            .select(
+              'id, customer_id, assigned_technician_id, service_type, status, '
+              'cancelled_at, cancelled_by, cancelled_by_name, cancellation_reason, created_by',
+            )
+            .eq('status', 'cancelled')
+            .gte('cancelled_at', start.toUtc().toIso8601String())
+            .lt('cancelled_at', end.toUtc().toIso8601String())
+            .order('cancelled_at', ascending: false)
+            .limit(250),
+      );
+
+      final customerIds = rows
+          .map((row) => row['customer_id']?.toString() ?? '')
+          .where((id) => id.isNotEmpty)
+          .toSet()
+          .toList(growable: false);
+      final profileIds = <String>{};
+      for (final row in rows) {
+        final technicianId = row['assigned_technician_id']?.toString() ?? '';
+        final cancelledBy = row['cancelled_by']?.toString() ?? '';
+        final createdBy = row['created_by']?.toString() ?? '';
+        if (technicianId.isNotEmpty) profileIds.add(technicianId);
+        if (cancelledBy.isNotEmpty) profileIds.add(cancelledBy);
+        if (createdBy.isNotEmpty) profileIds.add(createdBy);
+      }
+
+      final customerNames = <String, String>{};
+      if (customerIds.isNotEmpty) {
+        final customerRows = List<Map<String, dynamic>>.from(
+          await client
+              .from('customers')
+              .select('id, full_name, company_name')
+              .inFilter('id', customerIds),
+        );
+        for (final row in customerRows) {
+          final fullName = row['full_name']?.toString().trim() ?? '';
+          final companyName = row['company_name']?.toString().trim() ?? '';
+          customerNames[row['id'].toString()] =
+              fullName.isNotEmpty ? fullName : companyName;
+        }
+      }
+
+      final profileNames = <String, String>{};
+      if (profileIds.isNotEmpty) {
+        final profileRows = List<Map<String, dynamic>>.from(
+          await client
+              .from('profiles')
+              .select('id, full_name')
+              .inFilter('id', profileIds.toList(growable: false)),
+        );
+        for (final row in profileRows) {
+          profileNames[row['id'].toString()] =
+              row['full_name']?.toString().trim() ?? '';
+        }
+      }
+
+      return rows.map((row) {
+        final customerId = row['customer_id']?.toString() ?? '';
+        final technicianId = row['assigned_technician_id']?.toString() ?? '';
+        final cancelledBy = row['cancelled_by']?.toString() ?? '';
+        final snapshotActor = row['cancelled_by_name']?.toString().trim() ?? '';
+        final createdBy = row['created_by']?.toString() ?? '';
+        return <String, dynamic>{
+          ...row,
+          'customer_name': customerNames[customerId] ?? 'Müşteri',
+          'technician_name': profileNames[technicianId] ?? 'Atanmadı',
+          'cancelled_by_display': snapshotActor.isNotEmpty
+              ? snapshotActor
+              : (profileNames[cancelledBy] ?? 'Bilinmiyor'),
+          'secretary_name': profileNames[createdBy] ?? 'Bilinmiyor',
+        };
+      }).toList(growable: false);
+    } catch (_) {
+      return const <Map<String, dynamic>>[];
+    }
+  }
+
+  Future<List<Map<String, dynamic>>> _safeCouldNotCompleteServices(
+    DateTime start,
+    DateTime end,
+  ) async {
+    try {
+      final client = ref.read(operationsRepositoryProvider).client;
+      final rows = List<Map<String, dynamic>>.from(
+        await client
+            .from('service_requests')
+            .select(
+              'id, customer_id, assigned_technician_id, service_type, status, '
+              'planned_date, updated_at, created_by, completion_note, '
+              'technician_unavailable_reason, technician_unavailable_note',
+            )
+            .eq('status', 'could_not_complete')
+            .gte('planned_date', start.toUtc().toIso8601String())
+            .lt('planned_date', end.toUtc().toIso8601String())
+            .order('updated_at', ascending: false)
+            .limit(250),
+      );
+
+      final customerIds = rows
+          .map((row) => row['customer_id']?.toString() ?? '')
+          .where((id) => id.isNotEmpty)
+          .toSet()
+          .toList(growable: false);
+      final profileIds = <String>{};
+      for (final row in rows) {
+        final technicianId = row['assigned_technician_id']?.toString() ?? '';
+        final createdBy = row['created_by']?.toString() ?? '';
+        if (technicianId.isNotEmpty) profileIds.add(technicianId);
+        if (createdBy.isNotEmpty) profileIds.add(createdBy);
+      }
+
+      final customerNames = <String, String>{};
+      if (customerIds.isNotEmpty) {
+        final customerRows = List<Map<String, dynamic>>.from(
+          await client
+              .from('customers')
+              .select('id, full_name, company_name')
+              .inFilter('id', customerIds),
+        );
+        for (final row in customerRows) {
+          final fullName = row['full_name']?.toString().trim() ?? '';
+          final companyName = row['company_name']?.toString().trim() ?? '';
+          customerNames[row['id'].toString()] =
+              fullName.isNotEmpty ? fullName : companyName;
+        }
+      }
+
+      final profileNames = <String, String>{};
+      if (profileIds.isNotEmpty) {
+        final profileRows = List<Map<String, dynamic>>.from(
+          await client
+              .from('profiles')
+              .select('id, full_name')
+              .inFilter('id', profileIds.toList(growable: false)),
+        );
+        for (final row in profileRows) {
+          profileNames[row['id'].toString()] =
+              row['full_name']?.toString().trim() ?? '';
+        }
+      }
+
+      return rows.map((row) {
+        final customerId = row['customer_id']?.toString() ?? '';
+        final technicianId = row['assigned_technician_id']?.toString() ?? '';
+        final createdBy = row['created_by']?.toString() ?? '';
+        return <String, dynamic>{
+          ...row,
+          'customer_name': customerNames[customerId] ?? 'Müşteri',
+          'technician_name': profileNames[technicianId] ?? 'Atanmadı',
+          'secretary_name': profileNames[createdBy] ?? 'Bilinmiyor',
         };
       }).toList(growable: false);
     } catch (_) {
@@ -328,6 +498,11 @@ class _AdminDashboardScreenState extends ConsumerState<AdminDashboardScreen> {
       title: 'Ana Panel',
       subtitle: 'Canlı operasyon ve finans özeti',
       actions: [
+        FilledButton.tonalIcon(
+          onPressed: () => context.go('/manager/technician-locations'),
+          icon: const Icon(Icons.person_pin_circle_outlined, size: 18),
+          label: const Text('Tekniker Konumları'),
+        ),
         IconButton.filledTonal(
           tooltip: 'Önceki dönem',
           onPressed: () => _movePeriod(-1),
@@ -396,7 +571,52 @@ class _AdminDashboardScreenState extends ConsumerState<AdminDashboardScreen> {
                   ),
                 if (showPanel('summary')) const SizedBox(height: 14),
                 if (showPanel('summary'))
-                  _OverdueJobsPanel(rows: bundle.overdueServices),
+                  LayoutBuilder(
+                    builder: (context, constraints) {
+                      final overdue = _OverdueJobsPanel(rows: bundle.overdueServices);
+                      final cancelled = _CancelledJobsPanel(rows: bundle.cancelledServices);
+                      final couldNotComplete = _CouldNotCompleteJobsPanel(
+                        rows: bundle.couldNotCompleteServices,
+                      );
+                      if (constraints.maxWidth < 980) {
+                        return Column(
+                          children: [
+                            overdue,
+                            const SizedBox(height: 14),
+                            couldNotComplete,
+                            const SizedBox(height: 14),
+                            cancelled,
+                          ],
+                        );
+                      }
+                      if (constraints.maxWidth < 1320) {
+                        return Column(
+                          children: [
+                            Row(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Expanded(child: overdue),
+                                const SizedBox(width: 14),
+                                Expanded(child: couldNotComplete),
+                              ],
+                            ),
+                            const SizedBox(height: 14),
+                            cancelled,
+                          ],
+                        );
+                      }
+                      return Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Expanded(child: overdue),
+                          const SizedBox(width: 14),
+                          Expanded(child: couldNotComplete),
+                          const SizedBox(width: 14),
+                          Expanded(child: cancelled),
+                        ],
+                      );
+                    },
+                  ),
                 if (showPanel('summary') &&
                     (showPanel('technician_performance') ||
                         showPanel('secretary_performance') ||
@@ -531,6 +751,8 @@ class _DashboardBundle {
     required this.plannedServices,
     required this.createdServices,
     required this.overdueServices,
+    required this.cancelledServices,
+    required this.couldNotCompleteServices,
     required this.rangeStart,
     required this.rangeEnd,
   });
@@ -546,6 +768,8 @@ class _DashboardBundle {
       plannedServices: const <Map<String, dynamic>>[],
       createdServices: const <Map<String, dynamic>>[],
       overdueServices: const <Map<String, dynamic>>[],
+      cancelledServices: const <Map<String, dynamic>>[],
+      couldNotCompleteServices: const <Map<String, dynamic>>[],
       rangeStart: rangeStart,
       rangeEnd: rangeEnd,
     );
@@ -557,6 +781,8 @@ class _DashboardBundle {
   final List<Map<String, dynamic>> plannedServices;
   final List<Map<String, dynamic>> createdServices;
   final List<Map<String, dynamic>> overdueServices;
+  final List<Map<String, dynamic>> cancelledServices;
+  final List<Map<String, dynamic>> couldNotCompleteServices;
   final DateTime rangeStart;
   final DateTime rangeEnd;
 
@@ -949,17 +1175,29 @@ class _StaffPerformancePanel extends StatelessWidget {
         label: const Text('Tümünü Gör'),
         icon: const Icon(Icons.arrow_forward_rounded, size: 16),
       ),
-      child: Column(
+      child: Builder(
+        builder: (context) {
+          final mobile = MediaQuery.sizeOf(context).width < 700;
+          return Column(
         children: [
-          _PerformanceHeader(
-            first: staffLabel,
-            second: countLabel,
-            showTurnover: true,
-            showOutcomeColumns: showOutcomeColumns,
-          ),
-          const Divider(height: 1),
+          if (!mobile)
+            _PerformanceHeader(
+              first: staffLabel,
+              second: countLabel,
+              showTurnover: true,
+              showOutcomeColumns: showOutcomeColumns,
+            ),
+          if (!mobile) const Divider(height: 1),
           if (visible.isEmpty)
             const _EmptyPanelText('Bu dönemde personel hareketi bulunmuyor.')
+          else if (mobile)
+            for (final row in visible)
+              _MobilePerformanceRow(
+                row: row,
+                money: money,
+                showOutcomeColumns: showOutcomeColumns,
+                onTap: () => onOpenRow(row),
+              )
           else
             for (final row in visible)
               _PerformanceRow(
@@ -968,8 +1206,8 @@ class _StaffPerformancePanel extends StatelessWidget {
                 showOutcomeColumns: showOutcomeColumns,
                 onTap: () => onOpenRow(row),
               ),
-          const Divider(height: 1),
-          Padding(
+          if (!mobile) const Divider(height: 1),
+          if (!mobile) Padding(
             padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
             child: Row(
               children: [
@@ -1001,13 +1239,84 @@ class _StaffPerformancePanel extends StatelessWidget {
             child: TextButton.icon(
               onPressed: onOpenAll,
               label: Text('$staffLabel Performans Raporu'),
-                    icon: const Icon(Icons.arrow_forward_rounded, size: 16),
+              icon: const Icon(Icons.arrow_forward_rounded, size: 16),
             ),
           ),
         ],
+          );
+        },
       ),
     );
   }
+}
+
+class _MobilePerformanceRow extends StatelessWidget {
+  const _MobilePerformanceRow({
+    required this.row,
+    required this.money,
+    required this.showOutcomeColumns,
+    required this.onTap,
+  });
+
+  final _StaffRow row;
+  final NumberFormat money;
+  final bool showOutcomeColumns;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return InkWell(
+      onTap: onTap,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                CircleAvatar(
+                  radius: 16,
+                  backgroundColor: _avatarColor(row.name).withValues(alpha: .14),
+                  child: Text(_initials(row.name), style: TextStyle(color: _avatarColor(row.name), fontSize: 10, fontWeight: FontWeight.w900)),
+                ),
+                const SizedBox(width: 9),
+                Expanded(child: Text(row.name, style: const TextStyle(fontWeight: FontWeight.w900, fontSize: 13))),
+                const Icon(Icons.chevron_right_rounded, color: Color(0xFF8392A5)),
+              ],
+            ),
+            const SizedBox(height: 10),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                _MobileMetric('Toplam', row.total, const Color(0xFF10233D)),
+                _MobileMetric('Tamam', row.completed, const Color(0xFF12A35A)),
+                if (showOutcomeColumns) _MobileMetric('Yapılamadı', row.couldNotComplete, const Color(0xFFF18722)),
+                if (showOutcomeColumns) _MobileMetric('İptal', row.cancelled, const Color(0xFFE05252)),
+                _MobileMetric('Bekleyen', row.pending, const Color(0xFF7B61FF)),
+              ],
+            ),
+            const SizedBox(height: 8),
+            Text('Ciro: ${money.format(row.turnover)}', style: const TextStyle(fontWeight: FontWeight.w800, color: Color(0xFF496273))),
+            const Divider(height: 18),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _MobileMetric extends StatelessWidget {
+  const _MobileMetric(this.label, this.value, this.color);
+  final String label;
+  final int value;
+  final Color color;
+  @override
+  Widget build(BuildContext context) => Container(
+        padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 6),
+        decoration: BoxDecoration(color: color.withValues(alpha: .08), borderRadius: BorderRadius.circular(999)),
+        child: Text('$label $value', style: TextStyle(color: color, fontWeight: FontWeight.w800, fontSize: 11)),
+      );
 }
 
 class _PerformanceHeader extends StatelessWidget {
@@ -1119,6 +1428,307 @@ class _PerformanceRow extends StatelessWidget {
             const Icon(Icons.chevron_right_rounded, size: 18, color: Color(0xFF8392A5)),
           ],
         ),
+      ),
+    );
+  }
+}
+
+class _CouldNotCompleteJobsPanel extends StatelessWidget {
+  const _CouldNotCompleteJobsPanel({required this.rows});
+
+  final List<Map<String, dynamic>> rows;
+
+  @override
+  Widget build(BuildContext context) {
+    final visible = rows.take(8).toList(growable: false);
+    final mobile = MediaQuery.sizeOf(context).width < 760;
+    return _WhitePanel(
+      title: 'Tamamlanamayan İşler',
+      action: TextButton.icon(
+        onPressed: () => context.go('/manager/service-requests'),
+        icon: const Icon(Icons.arrow_forward_rounded, size: 16),
+        label: Text(rows.isEmpty ? 'Servisleri Aç' : 'Tümünü Gör (${rows.length})'),
+      ),
+      child: Column(
+        children: [
+          if (!mobile) ...[
+            const Padding(
+              padding: EdgeInsets.symmetric(horizontal: 14, vertical: 9),
+              child: Row(children: [
+                Expanded(flex: 3, child: Text('Müşteri', style: _OverdueJobsPanel._overdueHeaderStyle)),
+                Expanded(flex: 3, child: Text('Tekniker', style: _OverdueJobsPanel._overdueHeaderStyle)),
+                Expanded(flex: 4, child: Text('Sebep', style: _OverdueJobsPanel._overdueHeaderStyle)),
+                Expanded(flex: 2, child: Text('Tarih', textAlign: TextAlign.right, style: _OverdueJobsPanel._overdueHeaderStyle)),
+              ]),
+            ),
+            const Divider(height: 1),
+          ],
+          if (visible.isEmpty)
+            const _EmptyPanelText('Seçili dönemde tamamlanamayan iş bulunmuyor.')
+          else
+            for (final row in visible)
+              _CouldNotCompleteJobRow(row: row, mobile: mobile),
+        ],
+      ),
+    );
+  }
+}
+
+class _CouldNotCompleteJobRow extends StatelessWidget {
+  const _CouldNotCompleteJobRow({required this.row, required this.mobile});
+  final Map<String, dynamic> row;
+  final bool mobile;
+
+  String _reason() {
+    final values = <String>[
+      row['technician_unavailable_reason']?.toString().trim() ?? '',
+      row['technician_unavailable_note']?.toString().trim() ?? '',
+      row['completion_note']?.toString().trim() ?? '',
+    ].where((v) => v.isNotEmpty).toList(growable: false);
+    return values.isEmpty ? 'Sebep girilmemiş' : values.join(' • ');
+  }
+
+  static Widget _detailLine(String label, String value) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 7),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SizedBox(
+            width: 92,
+            child: Text(label, style: const TextStyle(fontWeight: FontWeight.w700)),
+          ),
+          const SizedBox(width: 8),
+          Expanded(child: Text(value)),
+        ],
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final customer = row['customer_name']?.toString().trim() ?? 'Müşteri';
+    final technician = row['technician_name']?.toString().trim() ?? 'Atanmadı';
+    final secretary = row['secretary_name']?.toString().trim() ?? 'Bilinmiyor';
+    final reason = _reason();
+    final at = DateTime.tryParse(row['updated_at']?.toString() ?? '')?.toLocal();
+    final when = at == null ? '-' : DateFormat('dd.MM.yyyy HH:mm').format(at);
+
+    Future<void> showReason() async {
+      await showDialog<void>(
+        context: context,
+        builder: (dialogContext) => AlertDialog(
+          title: Text(customer),
+          content: SizedBox(
+            width: 480,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                _detailLine('Tekniker', technician),
+                _detailLine('Sekreter', secretary),
+                _detailLine('Tarih', when),
+                const SizedBox(height: 12),
+                const Text('Tamamlanamama Sebebi', style: TextStyle(fontWeight: FontWeight.w900)),
+                const SizedBox(height: 6),
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFFFF5E8),
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: Text(reason),
+                ),
+              ],
+            ),
+          ),
+          actions: [TextButton(onPressed: () => Navigator.pop(dialogContext), child: const Text('Kapat'))],
+        ),
+      );
+    }
+
+    if (mobile) {
+      return InkWell(
+        onTap: showReason,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(children: [
+                Expanded(child: Text(customer, style: const TextStyle(fontWeight: FontWeight.w900))),
+                Text(when, style: const TextStyle(fontSize: 11, color: Color(0xFF68798C))),
+              ]),
+              const SizedBox(height: 5),
+              Text('Tekniker: $technician', style: const TextStyle(fontSize: 11.5, color: Color(0xFF526175))),
+              const SizedBox(height: 4),
+              Text('Sebep: $reason', maxLines: 2, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 11.5, color: Color(0xFFF18722), fontWeight: FontWeight.w800)),
+              const Divider(height: 18),
+            ],
+          ),
+        ),
+      );
+    }
+
+    return InkWell(
+      onTap: showReason,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
+        child: Row(children: [
+          Expanded(flex: 3, child: Text(customer, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 12))),
+          Expanded(flex: 3, child: Text(technician, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 11.5))),
+          Expanded(flex: 4, child: Text(reason, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(color: Color(0xFFF18722), fontWeight: FontWeight.w800, fontSize: 11.5))),
+          Expanded(flex: 2, child: Text(when, textAlign: TextAlign.right, style: const TextStyle(fontSize: 10.5, color: Color(0xFF68798C)))),
+        ]),
+      ),
+    );
+  }
+}
+
+class _CancelledJobsPanel extends StatelessWidget {
+  const _CancelledJobsPanel({required this.rows});
+
+  final List<Map<String, dynamic>> rows;
+
+  @override
+  Widget build(BuildContext context) {
+    final visible = rows.take(8).toList(growable: false);
+    final mobile = MediaQuery.sizeOf(context).width < 760;
+    return _WhitePanel(
+      title: 'İptal Edilen İşler',
+      action: TextButton.icon(
+        onPressed: () => context.go('/manager/service-requests'),
+        icon: const Icon(Icons.arrow_forward_rounded, size: 16),
+        label: Text(rows.isEmpty ? 'Servisleri Aç' : 'Tümünü Gör (${rows.length})'),
+      ),
+      child: Column(
+        children: [
+          if (!mobile) ...[
+            const Padding(
+              padding: EdgeInsets.symmetric(horizontal: 14, vertical: 9),
+              child: Row(children: [
+                Expanded(flex: 3, child: Text('Müşteri', style: _OverdueJobsPanel._overdueHeaderStyle)),
+                Expanded(flex: 3, child: Text('Tekniker', style: _OverdueJobsPanel._overdueHeaderStyle)),
+                Expanded(flex: 3, child: Text('Sekreter', style: _OverdueJobsPanel._overdueHeaderStyle)),
+                Expanded(flex: 3, child: Text('İptal Eden', style: _OverdueJobsPanel._overdueHeaderStyle)),
+                Expanded(flex: 2, child: Text('Tarih', textAlign: TextAlign.right, style: _OverdueJobsPanel._overdueHeaderStyle)),
+              ]),
+            ),
+            const Divider(height: 1),
+          ],
+          if (visible.isEmpty)
+            const _EmptyPanelText('Seçili dönemde iptal edilen iş bulunmuyor.')
+          else
+            for (final row in visible)
+              _CancelledJobRow(row: row, mobile: mobile),
+        ],
+      ),
+    );
+  }
+}
+
+class _CancelledJobRow extends StatelessWidget {
+  const _CancelledJobRow({required this.row, required this.mobile});
+  final Map<String, dynamic> row;
+  final bool mobile;
+
+  @override
+  Widget build(BuildContext context) {
+    final customer = row['customer_name']?.toString().trim() ?? 'Müşteri';
+    final technician = row['technician_name']?.toString().trim() ?? 'Atanmadı';
+    final secretary = row['secretary_name']?.toString().trim() ?? 'Bilinmiyor';
+    final actor = row['cancelled_by_display']?.toString().trim() ?? 'Bilinmiyor';
+    final reason = row['cancellation_reason']?.toString().trim() ?? '';
+    final at = DateTime.tryParse(row['cancelled_at']?.toString() ?? '')?.toLocal();
+    final when = at == null ? '-' : DateFormat('dd.MM.yyyy HH:mm').format(at);
+
+    Future<void> showReason() async {
+      await showDialog<void>(
+        context: context,
+        builder: (dialogContext) => AlertDialog(
+          title: Text(customer),
+          content: SizedBox(
+            width: 480,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                _cancelDetailLine('Tekniker', technician),
+                _cancelDetailLine('Sekreter', secretary),
+                _cancelDetailLine('İptal eden', actor),
+                _cancelDetailLine('İptal tarihi', when),
+                const SizedBox(height: 12),
+                const Text('İptal Sebebi', style: TextStyle(fontWeight: FontWeight.w900)),
+                const SizedBox(height: 6),
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFF8FAFC),
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: const Color(0xFFE1E8EF)),
+                  ),
+                  child: Text(reason.isEmpty ? 'İptal sebebi girilmemiş.' : reason),
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext),
+              child: const Text('Kapat'),
+            ),
+          ],
+        ),
+      );
+    }
+
+    final child = mobile
+        ? Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Row(children: [
+                Expanded(child: Text(customer, style: const TextStyle(fontWeight: FontWeight.w900))),
+                const Icon(Icons.chevron_right_rounded, color: Color(0xFF8091A4)),
+              ]),
+              const SizedBox(height: 5),
+              Text('Tekniker: $technician', style: const TextStyle(fontSize: 12, color: Color(0xFF496273))),
+              Text('Sekreter: $secretary', style: const TextStyle(fontSize: 12, color: Color(0xFF496273))),
+              Text('İptal eden: $actor', style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w800, color: Color(0xFFE05252))),
+              Text('İptal zamanı: $when', style: const TextStyle(fontSize: 11.5, color: Color(0xFF68798C))),
+              const Divider(height: 18),
+            ]),
+          )
+        : Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
+            child: Row(children: [
+              Expanded(flex: 3, child: Text(customer, style: const TextStyle(fontWeight: FontWeight.w800))),
+              Expanded(flex: 3, child: Text(technician, overflow: TextOverflow.ellipsis)),
+              Expanded(flex: 3, child: Text(secretary, overflow: TextOverflow.ellipsis)),
+              Expanded(flex: 3, child: Text(actor, overflow: TextOverflow.ellipsis, style: const TextStyle(fontWeight: FontWeight.w800, color: Color(0xFFE05252)))),
+              Expanded(flex: 2, child: Text(when, textAlign: TextAlign.right)),
+            ]),
+          );
+
+    return InkWell(
+      onTap: showReason,
+      child: child,
+    );
+  }
+
+  static Widget _cancelDetailLine(String label, String value) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 7),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SizedBox(
+            width: 95,
+            child: Text(label, style: const TextStyle(color: Color(0xFF68798C), fontWeight: FontWeight.w700)),
+          ),
+          Expanded(child: Text(value, style: const TextStyle(fontWeight: FontWeight.w800))),
+        ],
       ),
     );
   }
@@ -1289,6 +1899,45 @@ class _DailyProgramPanel extends StatelessWidget {
         visible.fold<int>(0, (sum, row) => sum + row.couldNotComplete);
     final cancelled = visible.fold<int>(0, (sum, row) => sum + row.cancelled);
     final pending = visible.fold<int>(0, (sum, row) => sum + row.pending);
+    final mobile = MediaQuery.sizeOf(context).width < 760;
+
+    if (mobile) {
+      return _WhitePanel(
+        title: 'Bugünkü İş Programı',
+        action: TextButton.icon(
+          onPressed: () => context.go('/manager/service-planning'),
+          label: const Text('Tümünü Gör'),
+          icon: const Icon(Icons.arrow_forward_rounded, size: 16),
+        ),
+        child: Column(
+          children: [
+            if (visible.isEmpty)
+              const _EmptyPanelText('Bu dönemde tekniker işi bulunmuyor.')
+            else
+              for (final row in visible)
+                _MobileDailyProgramRow(
+                  row: row,
+                  onTap: () => context.go('/manager/service-planning'),
+                ),
+            if (visible.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(14, 4, 14, 12),
+                child: Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: [
+                    _MobileMetric('Toplam', total, const Color(0xFF10233D)),
+                    _MobileMetric('Tamam', completed, const Color(0xFF12A35A)),
+                    _MobileMetric('Yapılamadı', couldNotComplete, const Color(0xFFF18722)),
+                    _MobileMetric('İptal', cancelled, const Color(0xFFE05252)),
+                    _MobileMetric('Bekleyen', pending, const Color(0xFF7B61FF)),
+                  ],
+                ),
+              ),
+          ],
+        ),
+      );
+    }
 
     return _WhitePanel(
       title: 'Bugünkü İş Programı',
@@ -1384,6 +2033,50 @@ class _DailyProgramPanel extends StatelessWidget {
     fontSize: 10.5,
     fontWeight: FontWeight.w700,
   );
+}
+
+class _MobileDailyProgramRow extends StatelessWidget {
+  const _MobileDailyProgramRow({required this.row, required this.onTap});
+  final _StaffRow row;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return InkWell(
+      onTap: onTap,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(children: [
+              CircleAvatar(
+                radius: 15,
+                backgroundColor: _avatarColor(row.name).withValues(alpha: .14),
+                child: Text(_initials(row.name), style: TextStyle(color: _avatarColor(row.name), fontWeight: FontWeight.w900, fontSize: 10)),
+              ),
+              const SizedBox(width: 8),
+              Expanded(child: Text(row.name, style: const TextStyle(fontWeight: FontWeight.w900, fontSize: 12.5))),
+              const Icon(Icons.chevron_right_rounded, size: 18, color: Color(0xFF8392A5)),
+            ]),
+            const SizedBox(height: 9),
+            Wrap(
+              spacing: 7,
+              runSpacing: 7,
+              children: [
+                _MobileMetric('Toplam', row.total, const Color(0xFF10233D)),
+                _MobileMetric('Tamam', row.completed, const Color(0xFF12A35A)),
+                _MobileMetric('Yapılamadı', row.couldNotComplete, const Color(0xFFF18722)),
+                _MobileMetric('İptal', row.cancelled, const Color(0xFFE05252)),
+                _MobileMetric('Bekleyen', row.pending, const Color(0xFF7B61FF)),
+              ],
+            ),
+            const Divider(height: 18),
+          ],
+        ),
+      ),
+    );
+  }
 }
 
 class _PaymentsPanel extends StatelessWidget {

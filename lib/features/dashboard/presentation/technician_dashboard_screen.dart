@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -8,6 +10,7 @@ import '../../../core/auth/auth_provider.dart';
 import '../../../core/widgets/management_shell.dart';
 import '../../service_execution/data/service_execution_providers.dart';
 import '../../service_execution/data/service_execution_repository.dart';
+import '../../location_tracking/data/technician_location_tracking_controller.dart';
 import '../../settings/data/company_app_settings.dart';
 
 class TechnicianDashboardScreen extends ConsumerStatefulWidget {
@@ -28,6 +31,13 @@ class _TechnicianDashboardScreenState
   void initState() {
     super.initState();
     _future = _load();
+    if (ref.read(authControllerProvider).role == AppRole.technician) {
+      unawaited(
+        ref
+            .read(technicianLocationTrackingControllerProvider.notifier)
+            .resumeIfEnabled(),
+      );
+    }
   }
 
   bool _sameDay(DateTime? value, DateTime day) {
@@ -69,6 +79,26 @@ class _TechnicianDashboardScreenState
     });
   }
 
+  Future<void> _toggleLocationTracking() async {
+    final current = ref.read(technicianLocationTrackingControllerProvider);
+    final controller =
+        ref.read(technicianLocationTrackingControllerProvider.notifier);
+    if (current.active) {
+      await controller.disable();
+    } else {
+      await controller.enable();
+    }
+    if (!mounted) return;
+    final next = ref.read(technicianLocationTrackingControllerProvider);
+    final message = next.message ??
+        (next.active
+            ? 'Mesai konum paylaşımı açık. MOTUS açıkken konumunuz yönetime gönderilir.'
+            : 'Konum paylaşımı kapatıldı.');
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(message)),
+    );
+  }
+
   Future<void> _pickDate() async {
     final picked = await showDatePicker(
       context: context,
@@ -90,6 +120,7 @@ class _TechnicianDashboardScreenState
     final auth = ref.watch(authControllerProvider);
     final fullName = auth.profile?.fullName.trim();
     final name = (fullName?.isNotEmpty ?? false) ? fullName! : 'Teknisyen';
+    final tracking = ref.watch(technicianLocationTrackingControllerProvider);
     final panelSettings = ref.watch(companyAppSettingsProvider).asData?.value ??
         const CompanyAppSettings(companyId: '');
     bool showPanel(String key) => panelSettings.panelVisible('technician', key);
@@ -99,6 +130,18 @@ class _TechnicianDashboardScreenState
       title: 'Merhaba, $name 👋',
       subtitle: 'Seçtiğiniz günün performansını buradan takip edebilirsiniz.',
       actions: [
+        if (auth.role == AppRole.technician)
+          tracking.active
+              ? FilledButton.tonalIcon(
+                  onPressed: tracking.busy ? null : _toggleLocationTracking,
+                  icon: const Icon(Icons.location_on_rounded, size: 18),
+                  label: const Text('Konum Açık'),
+                )
+              : OutlinedButton.icon(
+                  onPressed: tracking.busy ? null : _toggleLocationTracking,
+                  icon: const Icon(Icons.location_off_outlined, size: 18),
+                  label: Text(tracking.busy ? 'Konum...' : 'Konum Takibi'),
+                ),
         IconButton(
           tooltip: 'Önceki gün',
           onPressed: () => _moveDay(-1),

@@ -1,4 +1,5 @@
 import 'package:arn_erp_app/core/auth/app_role.dart';
+import 'package:arn_erp_app/core/auth/quick_login_codec.dart';
 
 class UserManagementUser {
   const UserManagementUser({
@@ -39,7 +40,7 @@ class UserManagementUser {
       companyId: json['company_id']?.toString() ?? '',
       fullName: json['full_name']?.toString() ?? '',
       email: json['email']?.toString() ?? '',
-      username: json['username']?.toString() ?? '',
+      username: decodeQuickUsername(json['username']?.toString() ?? ''),
       phone: json['phone']?.toString() ?? '',
       role: AppRole.fromValue(json['role']?.toString()),
       isActive: json['is_active'] as bool? ?? true,

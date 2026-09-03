@@ -124,6 +124,15 @@ class _ServicePlanningScreenState extends ConsumerState<ServicePlanningScreen> {
                   item.status == ServiceRequestStatus.inProgress,
             )
             .toList(growable: false);
+      case 'cancelled_today':
+        return items
+            .where(
+              (item) =>
+                  _sameDay(item.plannedDate!.toLocal(), now) &&
+                  (item.status == ServiceRequestStatus.cancelled ||
+                      item.status == ServiceRequestStatus.couldNotComplete),
+            )
+            .toList(growable: false);
       default:
         return items
             .where((item) => _inCurrentPeriod(item.plannedDate!))
@@ -672,6 +681,14 @@ class _SummaryCards extends StatelessWidget {
         'today_technicians',
       ),
       _MetricData(
+        'İptal / Yapılamadı',
+        '${count(ServiceRequestStatus.cancelled) + count(ServiceRequestStatus.couldNotComplete)}',
+        'Bugün',
+        Icons.cancel_outlined,
+        const Color(0xFFE53935),
+        'cancelled_today',
+      ),
+      _MetricData(
         'Geciken',
         '$delayed',
         'Plan tarihi geçen',
@@ -683,8 +700,8 @@ class _SummaryCards extends StatelessWidget {
 
     return LayoutBuilder(
       builder: (context, constraints) {
-        final columns = constraints.maxWidth >= 1180
-            ? 5
+        final columns = constraints.maxWidth >= 1320
+            ? 6
             : constraints.maxWidth >= 760
                 ? 3
                 : 2;
@@ -695,7 +712,7 @@ class _SummaryCards extends StatelessWidget {
             crossAxisCount: columns,
             crossAxisSpacing: 12,
             mainAxisSpacing: 12,
-            childAspectRatio: columns == 5 ? 2.3 : 2.15,
+            childAspectRatio: columns >= 5 ? 2.3 : 2.15,
           ),
           itemCount: cards.length,
           itemBuilder: (context, index) => _MetricCard(

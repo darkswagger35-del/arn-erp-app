@@ -355,22 +355,37 @@ class CustomerController extends ChangeNotifier {
     );
 
     try {
+      final CustomerModel savedCustomer;
       if (normalizedCustomer.id == null || normalizedCustomer.id!.isEmpty) {
-        await repository.createCustomer(
+        savedCustomer = await repository.createCustomer(
           normalizedCustomer.copyWith(isActive: true),
         );
       } else {
-        await repository.updateCustomer(normalizedCustomer);
+        savedCustomer = await repository.updateCustomer(normalizedCustomer);
       }
-      await loadCustomers(resetPage: true);
+
+      // V64 performance: create/update cevabı zaten güncel müşteriyi içeriyor.
+      // Kaydet butonunu kapatmadan önce tüm müşteri listesini bir daha Supabase'den
+      // çekmek gereksiz 3-4 ağ isteği oluşturuyordu. Listeyi yerelde güncelliyoruz;
+      // müşteri ekranı açıldığında/yenilendiğinde normal sorgu yine çalışır.
+      final customers = List<CustomerModel>.from(_state.customers);
+      final index = customers.indexWhere((item) => item.id == savedCustomer.id);
+      if (index >= 0) {
+        customers[index] = savedCustomer;
+      } else if (_state.search.isEmpty &&
+          _state.phone.isEmpty &&
+          _state.city.isEmpty &&
+          _state.district.isEmpty &&
+          (_state.isActive == null || savedCustomer.isActive == _state.isActive)) {
+        customers.insert(0, savedCustomer);
+      }
+
       _state = _state.copyWith(
+        customers: customers,
+        currentCustomer: normalizedCustomer.id != null ? savedCustomer : _state.currentCustomer,
         isSaving: false,
         successMessage: 'Müşteri başarıyla kaydedildi.',
       );
-      if (normalizedCustomer.id != null &&
-          _state.currentCustomer?.id == normalizedCustomer.id) {
-        await loadCustomer(normalizedCustomer.id!);
-      }
     } on AppException catch (error) {
       _state = _state.copyWith(isSaving: false, errorMessage: error.message);
     } catch (_) {

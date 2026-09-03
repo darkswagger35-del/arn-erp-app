@@ -50,14 +50,51 @@ class _SecretaryDashboardScreenState extends ConsumerState<SecretaryDashboardScr
     _future = _load();
   }
 
+  static const _emptyCounts = SecretaryFollowUpCounts(
+    newCount: 0,
+    nowCount: 0,
+    todayCount: 0,
+    unansweredCount: 0,
+    futureCount: 0,
+    overdueCount: 0,
+    trackingCount: 0,
+    closedCount: 0,
+    wonToday: 0,
+    callsToday: 0,
+  );
+
+  Future<T> _safe<T>(Future<T> future, T fallback) async {
+    try {
+      return await future.timeout(const Duration(seconds: 3));
+    } catch (error) {
+      debugPrint('Sekreter paneli veri yükleme uyarısı: $error');
+      return fallback;
+    }
+  }
+
   Future<_SecretaryDashboardData> _load() async {
     final crm = ref.read(secretaryCrmRepositoryProvider);
+    final maintenanceRepository = MaintenanceRepository(crm.client);
+
+    // V63: Bir Supabase sorgusu takılırsa tüm sekreter panelini sonsuza kadar
+    // kilitlemiyoruz. Her bölüm bağımsız yüklenir ve 3 sn sonra güvenli varsayılanla
+    // devam eder. Böylece menüler ve çalışan diğer bölümler kullanılabilir kalır.
     final results = await Future.wait<Object>([
-      ref.read(operationsRepositoryProvider).dashboardWorkspace(selectedDate: _selectedDate),
-      crm.counts(),
-      crm.latestLeads(limit: 6),
-      MaintenanceRepository(ref.read(secretaryCrmRepositoryProvider).client).getUpcoming(days: 45),
-      crm.todayServicePerformance(),
+      _safe<Map<String, dynamic>>(
+        ref.read(operationsRepositoryProvider).dashboardWorkspace(selectedDate: _selectedDate),
+        <String, dynamic>{
+          'today_jobs': <Map<String, dynamic>>[],
+          'selected_completed': 0,
+          'selected_cancelled': 0,
+        },
+      ),
+      _safe<SecretaryFollowUpCounts>(crm.counts(), _emptyCounts),
+      _safe<List<SecretaryLead>>(crm.latestLeads(limit: 6), const <SecretaryLead>[]),
+      _safe<List<MaintenanceReminder>>(
+        maintenanceRepository.getUpcoming(days: 45),
+        const <MaintenanceReminder>[],
+      ),
+      _safe<Map<String, num>>(crm.todayServicePerformance(), const <String, num>{}),
     ]);
     return _SecretaryDashboardData(
       workspace: results[0] as Map<String, dynamic>,

@@ -28,6 +28,7 @@ import '../features/user_management/presentation/user_management_screen.dart';
 import '../features/inventory/presentation/warehouse_management_screen.dart';
 import '../features/inventory/presentation/stock_movements_screen.dart';
 import '../features/finance/presentation/payments_screen.dart';
+import '../features/cash_register/presentation/cash_register_screen.dart';
 import '../features/notifications/presentation/notification_center_screen.dart';
 import '../features/service_planning/presentation/service_planning_screen.dart';
 import '../features/documents/presentation/service_documents_screen.dart';
@@ -37,6 +38,7 @@ import '../features/customer_portal/presentation/customer_portal_screen.dart';
 import '../features/maintenance/presentation/historical_customer_screen.dart';
 import '../features/maintenance/presentation/upcoming_maintenance_screen.dart';
 import '../features/data_transfer/presentation/excel_transfer_screen.dart';
+import '../features/location_tracking/presentation/technician_locations_screen.dart';
 
 
 final rootNavigatorKey = GlobalKey<NavigatorState>(debugLabel: 'rootNavigator');
@@ -139,6 +141,13 @@ String? resolveRouteRedirect({
         return _fallbackRouteForRole(currentRole);
       }
       break;
+    case '/technician/cash':
+      if (currentRole != AppRole.technician &&
+          currentRole != AppRole.manager &&
+          currentRole != AppRole.admin) {
+        return _fallbackRouteForRole(currentRole);
+      }
+      break;
 
     case '/manager/users':
     case '/manager/settings':
@@ -147,6 +156,7 @@ String? resolveRouteRedirect({
     case '/manager/warehouses':
     case '/manager/stock-movements':
     case '/manager/payments':
+    case '/manager/cash':
     case '/manager/reports':
     case '/manager/service-planning':
     case '/manager/service-documents':
@@ -155,6 +165,7 @@ String? resolveRouteRedirect({
     case '/manager/maintenance':
     case '/manager/customers/historical':
     case '/manager/excel-transfer':
+    case '/manager/technician-locations':
       if (currentRole != AppRole.manager && currentRole != AppRole.admin) {
         return _fallbackRouteForRole(currentRole);
       }
@@ -337,6 +348,10 @@ final routerProvider = Provider<GoRouter>((ref) {
         builder: (context, state) => const FinancePaymentsScreen(),
       ),
       GoRoute(
+        path: '/manager/cash',
+        builder: (context, state) => const CashRegisterScreen(role: AppRole.manager),
+      ),
+      GoRoute(
         path: '/manager/reports',
         builder: (context, state) => const ReportsScreen(),
       ),
@@ -347,6 +362,10 @@ final routerProvider = Provider<GoRouter>((ref) {
       GoRoute(
         path: '/manager/dispatch',
         builder: (context, state) => const DispatchBoardScreen(),
+      ),
+      GoRoute(
+        path: '/manager/technician-locations',
+        builder: (context, state) => const TechnicianLocationsScreen(),
       ),
       GoRoute(
         path: '/manager/service-planning',
@@ -502,6 +521,10 @@ final routerProvider = Provider<GoRouter>((ref) {
       GoRoute(
         path: '/secretary/reports',
         builder: (context, state) => const SecretaryPerformanceScreen(),
+      ),
+      GoRoute(
+        path: '/technician/cash',
+        builder: (context, state) => const CashRegisterScreen(role: AppRole.technician),
       ),
       GoRoute(
         path: '/technician/jobs',

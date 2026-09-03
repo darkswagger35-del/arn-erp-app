@@ -31,8 +31,10 @@ class _SecretaryFollowUpScreenState extends ConsumerState<SecretaryFollowUpScree
     _future = _load();
   }
 
-  Future<List<SecretaryLead>> _load() =>
-      ref.read(secretaryCrmRepositoryProvider).listLeads(mode: widget.mode);
+  Future<List<SecretaryLead>> _load() => ref
+      .read(secretaryCrmRepositoryProvider)
+      .listLeads(mode: widget.mode)
+      .timeout(const Duration(seconds: 12));
 
   void _refresh() => setState(() => _future = _load());
 
@@ -75,7 +77,22 @@ class _SecretaryFollowUpScreenState extends ConsumerState<SecretaryFollowUpScree
             return const Center(child: CircularProgressIndicator());
           }
           if (snapshot.hasError) {
-            return Center(child: Text('Takip listesi yüklenemedi.\n${snapshot.error}', textAlign: TextAlign.center));
+            return Center(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Icon(Icons.cloud_off_rounded, size: 38, color: Color(0xFF66778A)),
+                  const SizedBox(height: 10),
+                  const Text('Takip listesi zamanında yüklenemedi.', textAlign: TextAlign.center),
+                  const SizedBox(height: 10),
+                  FilledButton.icon(
+                    onPressed: _refresh,
+                    icon: const Icon(Icons.refresh_rounded),
+                    label: const Text('Tekrar Dene'),
+                  ),
+                ],
+              ),
+            );
           }
           final rows = _applyLocalFilters(_defensiveFilter(snapshot.data ?? const <SecretaryLead>[]));
           return ListView(

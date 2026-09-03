@@ -92,6 +92,14 @@ class CustomerRepositoryImpl implements CustomerRepository {
 
   final SupabaseClient? client;
 
+  // V64 performance: auth/company context is session-scoped. Re-fetching it via
+  // multiple RPC calls for every list/save was adding several network round trips.
+  Map<String, dynamic>? _profileCache;
+  DateTime? _profileCacheAt;
+  final Map<String, Map<String, dynamic>> _behaviorCache = <String, Map<String, dynamic>>{};
+  final Map<String, DateTime> _behaviorCacheAt = <String, DateTime>{};
+  static const Duration _contextCacheTtl = Duration(minutes: 10);
+
   @override
   Future<CustomerPage> listCustomers({
     int page = 1,
@@ -506,7 +514,20 @@ class CustomerRepositoryImpl implements CustomerRepository {
 
   Future<Map<String, dynamic>?> _currentProfile(SupabaseClient supabase) async {
     final user = supabase.auth.currentUser;
-    if (user == null) return null;
+    if (user == null) {
+      _profileCache = null;
+      _profileCacheAt = null;
+      return null;
+    }
+
+    final cached = _profileCache;
+    final cachedAt = _profileCacheAt;
+    if (cached != null &&
+        cached['id']?.toString() == user.id &&
+        cachedAt != null &&
+        DateTime.now().difference(cachedAt) < _contextCacheTtl) {
+      return cached;
+    }
 
     // RLS altında `profiles.maybeSingle()` bazı tekniker hesaplarında 0 satır
     // dönüp "Cannot coerce the result to a single JSON object" üretebiliyordu.
@@ -524,11 +545,14 @@ class CustomerRepositoryImpl implements CustomerRepository {
       final company = companyId?.toString() ?? '';
       final roleText = role?.toString() ?? '';
       if (company.isNotEmpty && roleText.isNotEmpty) {
-        return <String, dynamic>{
+        final value = <String, dynamic>{
           'id': user.id,
           'company_id': company,
           'role': roleText,
         };
+        _profileCache = value;
+        _profileCacheAt = DateTime.now();
+        return value;
       }
     } catch (_) {
       // Eski kurulumlarda RPC yoksa aşağıdaki klasik sorguya düş.
@@ -541,7 +565,10 @@ class CustomerRepositoryImpl implements CustomerRepository {
           .eq('id', user.id)
           .limit(1);
       if (rows is! List || rows.isEmpty || rows.first is! Map) return null;
-      return Map<String, dynamic>.from(rows.first as Map);
+      final value = Map<String, dynamic>.from(rows.first as Map);
+      _profileCache = value;
+      _profileCacheAt = DateTime.now();
+      return value;
     } catch (_) {
       return null;
     }
@@ -551,13 +578,25 @@ class CustomerRepositoryImpl implements CustomerRepository {
     SupabaseClient supabase,
     String companyId,
   ) async {
+    final cached = _behaviorCache[companyId];
+    final cachedAt = _behaviorCacheAt[companyId];
+    if (cached != null &&
+        cachedAt != null &&
+        DateTime.now().difference(cachedAt) < _contextCacheTtl) {
+      return cached;
+    }
     try {
       final row = await supabase
           .from('company_app_settings')
           .select('permissions, customer_rules')
           .eq('company_id', companyId)
           .maybeSingle();
-      return row == null ? const <String, dynamic>{} : Map<String, dynamic>.from(row);
+      final value = row == null
+          ? <String, dynamic>{}
+          : Map<String, dynamic>.from(row);
+      _behaviorCache[companyId] = value;
+      _behaviorCacheAt[companyId] = DateTime.now();
+      return value;
     } catch (_) {
       // Yeni kontrol merkezi migrationı henüz uygulanmadıysa mevcut güvenli
       // varsayılanlarla çalışmaya devam et.

@@ -1,5 +1,5 @@
 import 'dart:convert';
-import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
@@ -346,9 +346,10 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
       );
       if (picked == null) return;
       final file = picked.files.single;
-      var bytes = file.bytes;
-      if (bytes == null && file.path != null) bytes = await File(file.path!).readAsBytes();
-      if (bytes == null) throw StateError('Logo dosyası okunamadı.');
+      final bytes = file.bytes;
+      if (bytes == null) {
+        throw StateError('Logo dosyası okunamadı. Dosyayı yeniden seçin.');
+      }
       setState(() => _logoBusy = true);
       final url = await ref.read(settingsRepositoryProvider).uploadLogo(bytes: bytes, fileName: file.name);
       if (!mounted) return;
@@ -400,10 +401,11 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
         type: FileType.custom,
         allowedExtensions: const ['json'],
         allowMultiple: false,
+        withData: true,
       );
-      final path = picked?.files.single.path;
-      if (path == null) return;
-      final decoded = jsonDecode(await File(path).readAsString());
+      final bytes = picked?.files.single.bytes;
+      if (bytes == null) return;
+      final decoded = jsonDecode(utf8.decode(bytes));
       if (decoded is! Map) throw const FormatException('Geçersiz yedek dosyası.');
       final root = Map<String, dynamic>.from(decoded);
       final snapshot = root['snapshot'];
@@ -432,21 +434,18 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
           ? await ref.read(settingsControlCenterRepositoryProvider).loadBackup(backup.id)
           : backup;
       final stamp = DateFormat('yyyyMMdd_HHmm').format(full.createdAt.toLocal());
-      final path = await FilePicker.platform.saveFile(
+      final jsonText = const JsonEncoder.withIndent('  ').convert({
+        'backup_id': full.id,
+        'created_at': full.createdAt.toUtc().toIso8601String(),
+        'counts': full.counts,
+        'snapshot': full.snapshot,
+      });
+      await FilePicker.platform.saveFile(
         dialogTitle: 'MOTUS yedeğini kaydet',
         fileName: 'MOTUS_YEDEK_$stamp.json',
         type: FileType.custom,
         allowedExtensions: const ['json'],
-      );
-      if (path == null) return;
-      await File(path).writeAsString(
-        const JsonEncoder.withIndent('  ').convert({
-          'backup_id': full.id,
-          'created_at': full.createdAt.toUtc().toIso8601String(),
-          'counts': full.counts,
-          'snapshot': full.snapshot,
-        }),
-        flush: true,
+        bytes: Uint8List.fromList(utf8.encode(jsonText)),
       );
       if (mounted) _message('Yedek dosyası kaydedildi.');
     } catch (error) {
@@ -1005,6 +1004,29 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
             },
           );
         }).toList(growable: false)),
+        const Divider(height: 30),
+        const Text('Kredi Kartı Komisyonları', style: TextStyle(fontWeight: FontWeight.w900, color: _ink)),
+        const SizedBox(height: 5),
+        const Text(
+          'Bu oranları yalnız yönetici değiştirir. Tekniker servisi kapatırken sadece taksit seçer.',
+          style: TextStyle(color: _muted, fontSize: 12),
+        ),
+        const SizedBox(height: 12),
+        _CommissionRateEditor(
+          settings: _settings,
+          onChanged: (installment, rate) {
+            final rules = Map<String, dynamic>.from(_settings.serviceRules);
+            final current = rules['card_commission_rates'];
+            final rates = Map<String, dynamic>.from(
+              current is Map ? current : const <String, dynamic>{},
+            );
+            rates[installment.toString()] = rate.clamp(0, 100).toDouble();
+            rules['card_commission_rates'] = rates;
+            setState(() => _settings = _settings.copyWith(serviceRules: rules));
+          },
+        ),
+        const SizedBox(height: 6),
+        const Text('Değişikliklerden sonra sağ üstteki “Ayarları Kaydet” düğmesine basın.', style: TextStyle(color: _muted, fontSize: 11.5)),
       ]),
     );
   }
@@ -1287,6 +1309,50 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
   }
 
   static const _labelStyle = TextStyle(fontWeight: FontWeight.w900, color: _ink, fontSize: 13);
+}
+
+class _CommissionRateEditor extends StatelessWidget {
+  const _CommissionRateEditor({required this.settings, required this.onChanged});
+
+  final CompanyAppSettings settings;
+  final void Function(int installment, double rate) onChanged;
+
+  static const installments = <int>[1, 2, 3, 4, 5, 6, 9, 12];
+
+  @override
+  Widget build(BuildContext context) {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final width = constraints.maxWidth < 520
+            ? constraints.maxWidth
+            : constraints.maxWidth < 900
+                ? (constraints.maxWidth - 12) / 2
+                : 180.0;
+        return Wrap(
+          spacing: 12,
+          runSpacing: 12,
+          children: installments.map((installment) {
+            return SizedBox(
+              width: width,
+              child: TextFormField(
+                key: ValueKey('commission-$installment-${settings.cardCommissionRate(installment)}'),
+                initialValue: settings.cardCommissionRate(installment).toStringAsFixed(2),
+                keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                decoration: InputDecoration(
+                  labelText: installment == 1 ? 'Tek Çekim (%)' : '$installment Taksit (%)',
+                  suffixText: '%',
+                ),
+                onChanged: (value) {
+                  final parsed = double.tryParse(value.trim().replaceAll(',', '.'));
+                  if (parsed != null) onChanged(installment, parsed);
+                },
+              ),
+            );
+          }).toList(growable: false),
+        );
+      },
+    );
+  }
 }
 
 class _PermissionRow {

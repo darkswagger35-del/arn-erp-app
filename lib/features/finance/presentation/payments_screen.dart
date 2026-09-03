@@ -177,14 +177,18 @@ class _FinancePaymentsScreenState extends ConsumerState<FinancePaymentsScreen> {
           final monthTotal = _sum(bundle.month);
           final monthCash = _sum(_byMethod(bundle.month, 'cash'));
           final monthCard = _sum(_byMethod(bundle.month, 'card'));
+          final todayCardCommission = _commissionSum(_byMethod(bundle.today, 'card'));
+          final monthCardCommission = _commissionSum(_byMethod(bundle.month, 'card'));
+          final todayCardNet = _netSum(_byMethod(bundle.today, 'card'));
+          final monthCardNet = _netSum(_byMethod(bundle.month, 'card'));
 
           return ListView(
             padding: const EdgeInsets.fromLTRB(18, 14, 18, 24),
             children: [
               LayoutBuilder(
                 builder: (context, c) {
-                  final columns = c.maxWidth >= 1250
-                      ? 6
+                  final columns = c.maxWidth >= 1350
+                      ? 4
                       : c.maxWidth >= 820
                           ? 3
                           : c.maxWidth >= 520
@@ -220,6 +224,13 @@ class _FinancePaymentsScreenState extends ConsumerState<FinancePaymentsScreen> {
                         color: const Color(0xFF8B5CF6),
                       ),
                       _FinanceMetric(
+                        title: 'Bugünkü Kart Net',
+                        value: money.format(todayCardNet),
+                        detail: 'Komisyon ${money.format(todayCardCommission)}',
+                        icon: Icons.savings_outlined,
+                        color: const Color(0xFF0EA5A8),
+                      ),
+                      _FinanceMetric(
                         title: 'Bu Ay Tahsilat',
                         value: money.format(monthTotal),
                         detail: '${bundle.month.length} işlem',
@@ -239,6 +250,13 @@ class _FinancePaymentsScreenState extends ConsumerState<FinancePaymentsScreen> {
                         detail: '${_byMethod(bundle.month, 'card').length} işlem',
                         icon: Icons.credit_card_rounded,
                         color: const Color(0xFF8B5CF6),
+                      ),
+                      _FinanceMetric(
+                        title: 'Bu Ay Kart Net',
+                        value: money.format(monthCardNet),
+                        detail: 'Komisyon ${money.format(monthCardCommission)}',
+                        icon: Icons.account_balance_outlined,
+                        color: const Color(0xFF0EA5A8),
                       ),
                     ],
                   );
@@ -397,6 +415,12 @@ class _FinancePaymentsScreenState extends ConsumerState<FinancePaymentsScreen> {
                               'Ödeme',
                               _methodName(row['payment_method']?.toString()),
                             ),
+                            if (row['payment_method']?.toString() == 'card')
+                              _FinanceDetail('Taksit', '${(row['card_installments'] as num?)?.toInt() ?? 1}'),
+                            if (row['payment_method']?.toString() == 'card')
+                              _FinanceDetail('Komisyon', '${_num(row['card_commission_rate']).toStringAsFixed(2)}% • ${money.format(_num(row['card_commission_amount']))}'),
+                            if (row['payment_method']?.toString() == 'card')
+                              _FinanceDetail('Net Tahsilat', money.format(_netAmount(row))),
                             _FinanceDetail(
                               'Telefon',
                               customer['phone']?.toString() ?? '-',
@@ -474,6 +498,18 @@ class _FinancePaymentsScreenState extends ConsumerState<FinancePaymentsScreen> {
 
   static double _sum(List<Map<String, dynamic>> rows) =>
       rows.fold<double>(0, (sum, row) => sum + _amount(row));
+
+  static double _commissionSum(List<Map<String, dynamic>> rows) =>
+      rows.fold<double>(0, (sum, row) => sum + _num(row['card_commission_amount']));
+
+  static double _netSum(List<Map<String, dynamic>> rows) =>
+      rows.fold<double>(0, (sum, row) => sum + _netAmount(row));
+
+  static double _netAmount(Map<String, dynamic> row) {
+    final stored = _num(row['net_amount']);
+    if (stored > 0 || _amount(row) == 0) return stored;
+    return _amount(row) - _num(row['card_commission_amount']);
+  }
 
   static double _amount(Map<String, dynamic> row) => _num(row['amount']);
 
